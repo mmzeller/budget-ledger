@@ -133,6 +133,22 @@ select.sel, input.date { flex:1; font-size:15px; }
 .tl-multi { font-size:14px; font-weight:600; padding:8px 0; }
 .tl-out { width:76px; text-align:right; font-size:14px; font-weight:600; flex:none; }
 
+.tl-wrap { border-bottom:1px solid var(--rule); }
+.tl-wrap:last-child { border-bottom:none; }
+.tl-row { border-bottom:none; }
+.tl-row.tappable { cursor:pointer; }
+.chev { font-size:17px; color:var(--ink-faint); margin-left:auto; padding:0 2px 0 8px;
+  display:inline-block; transition:transform .15s ease; }
+.chev.open { transform:rotate(90deg); }
+.tl-detail { display:none; padding:0 0 10px 78px; }
+.tl-detail.open { display:block; }
+.tl-src { display:flex; align-items:center; gap:6px; padding:3px 0; }
+.tl-srcname { flex:1; min-width:0; font-size:13px; color:var(--ink-soft);
+  overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+.daybox { display:flex; align-items:center; gap:6px; }
+.dayunit { font-size:12px; color:var(--ink-faint); }
+.tl-amt { font-size:13px; font-weight:600; min-width:62px; text-align:right; }
+
 .pot { padding:8px 0 12px; border-bottom:1px solid var(--rule); }
 .pot:last-of-type { border-bottom:none; }
 .pot-meta { display:flex; align-items:center; gap:6px; padding:2px 0 8px; flex-wrap:wrap; }
@@ -195,7 +211,7 @@ window.FIREBASE_CONFIG = {
 (function () {
 "use strict";
 
-var BUILD = "2026-09-15f";
+var BUILD = "2026-09-15h";
 var LS = "paycheck-ledger-v2";
 var HORIZON = 13;
 var PER_CHECK = 12 / 26;
@@ -224,8 +240,9 @@ function seed(){
   while (d.getDay() !== 5) d.setDate(d.getDate()+1);
   return {
     checking:0, savings:0,
-    incomes:[{id:uid(),name:"Main paycheck",baseline:0,low:0,cadence:"biweekly",firstPayDate:toISO(d)}],
-    overrides:{},
+    incomes:[{id:uid(),name:"Main paycheck",payType:"fixed",baseline:0,low:0,
+              dayRate:0,typicalDays:10,lowDays:5,cadence:"biweekly",firstPayDate:toISO(d)}],
+    overrides:{}, days:{},
     bills:[
       {id:uid(),name:"Rent / mortgage",amount:0,dueDay:1},
       {id:uid(),name:"Electric",amount:0,dueDay:15},
@@ -256,6 +273,7 @@ function normalize(raw){
     checking:num(raw.checking), savings:num(raw.savings),
     incomes:(Array.isArray(raw.incomes)&&raw.incomes.length)?raw.incomes:s.incomes,
     overrides:(raw.overrides&&typeof raw.overrides==="object")?raw.overrides:{},
+    days:(raw.days&&typeof raw.days==="object")?raw.days:{},
     bills:Array.isArray(raw.bills)?raw.bills:s.bills,
     debts:Array.isArray(raw.debts)?raw.debts:s.debts,
     life:Array.isArray(raw.life)?raw.life:s.life,
@@ -329,8 +347,10 @@ function buildPeriods(){
     state.incomes.forEach(function(inc){
       incomeEvents(inc,start,end).forEach(function(d){
         var k=inc.id+"_"+toISO(d);
-        var amt=state.overrides[k]!==undefined?num(state.overrides[k]):num(inc.baseline);
-        income+=amt; sources.push({incomeId:inc.id,date:d,amount:amt,key:k});
+        var amt=amountFor(inc,k);
+        income+=amt;
+        sources.push({incomeId:inc.id,date:d,amount:amt,key:k,daily:inc.payType==="daily",
+                      days:daysFor(inc,k)});
       });
     });
     var hits=[];
@@ -348,6 +368,24 @@ function buildPeriods(){
   periods.forEach(function(p){ counts[p.monthKey]=(counts[p.monthKey]||0)+1; });
   periods.forEach(function(p){ p.thirdCheck=counts[p.monthKey]>=3; });
   return periods;
+}
+function daysFor(inc,k){
+  return state.days[k]!==undefined ? num(state.days[k]) : num(inc.typicalDays);
+}
+function amountFor(inc,k){
+  if(state.overrides[k]!==undefined) return num(state.overrides[k]);   // an actual check, pinned
+  if(inc.payType==="daily") return num(inc.dayRate)*daysFor(inc,k);
+  return num(inc.baseline);
+}
+/* what one income contributes to a single pay period, whatever its cadence */
+function perPeriod(inc,which){
+  var base = inc.payType==="daily"
+    ? num(inc.dayRate) * (which==="low" ? num(inc.lowDays) : num(inc.typicalDays))
+    : (which==="low" ? num(inc.low) : num(inc.baseline));
+  if(inc.cadence==="weekly") return base*2;
+  if(inc.cadence==="semimonthly") return base*(24/26);
+  if(inc.cadence==="monthly") return base*PER_CHECK;
+  return base;
 }
 function totals(){
   var bills=state.bills.reduce(function(s,b){return s+num(b.amount);},0);
@@ -526,6 +564,16 @@ function buildWorkbook(X){
             l.kind==="save"?num(l.target):"",l.kind==="save"?num(l.saved):""];})),"Life");
   sheet([["Pay date","Income","Bills due","Debt","Spending","Saving","Left over"]].concat(periods.map(function(p){
     return [toISO(p.start),p.income,p.billTotal,p.debt,p.spend,p.save,p.free];})),"Paycheck plan");
+  var incRows=[["Pay period","Income","Paid on","Days","Amount"]];
+  periods.forEach(function(p){
+    p.sources.forEach(function(src){
+      var i0=state.incomes.filter(function(x){return x.id===src.incomeId;})[0];
+      incRows.push([toISO(p.start), i0?i0.name:"", toISO(src.date),
+                    src.daily?src.days:"", src.amount]);
+    });
+  });
+  sheet(incRows,"Income detail");
+
   var detail=[["Pay date","Bill","Due","Amount"]];
   periods.forEach(function(p){ p.bills.forEach(function(b){ detail.push([toISO(p.start),b.name,toISO(b.date),b.amount]); }); });
   sheet(detail,"Bills by check");
@@ -570,6 +618,14 @@ function moneyInput(get,set,width){
 function textInput(get,set){
   var i=document.createElement("input"); i.className="text"; i.value=get();
   i.addEventListener("input",safe(function(){ set(i.value); refresh(); touched(); }));
+  return i;
+}
+function countInput(get,set,width){
+  var i=document.createElement("input");
+  i.className="day"; i.setAttribute("inputmode","numeric");
+  if(width) i.style.width=width+"px";
+  var v=get(); i.value=(v||v===0)?String(v):"";
+  i.addEventListener("input",safe(function(){ set(num(i.value)); refresh(); touched(); }));
   return i;
 }
 function row(kids,onDelete){
@@ -679,28 +735,71 @@ function renderPlan(m){
 
   var tlCard=el("section","card");
   tlCard.appendChild(el("h2",null,"The next six months"));
-  tlCard.appendChild(el("p","muted","Tap an amount to change what you expect that check to be."));
+  tlCard.appendChild(el("p","muted","Set what each check will be. For pay by the day, enter the days worked and the dollars follow. Rows with two incomes expand when you tap them."));
   var tl=el("div"); tlCard.appendChild(tl);
   tlCard.appendChild(el("p","muted foot","A dot marks a month with three paychecks — the bills stay the same, so that check is mostly yours."));
   m.appendChild(tlCard);
 
-  var outCells=[];
+  var outCells=[], amtCells=[], totCells=[];
+  function incOf(id){ return state.incomes.filter(function(x){return x.id===id;})[0]; }
+  function sourceControl(src,inc,into){
+    if(inc.payType==="daily"){
+      var box=el("div","daybox");
+      box.appendChild(countInput(
+        function(){ return daysFor(inc,src.key); },
+        function(v){ state.days[src.key]=v; delete state.overrides[src.key]; },48));
+      box.appendChild(el("span","dayunit","days"));
+      var a=el("span","tl-amt"); box.appendChild(a);
+      amtCells.push({el:a,inc:inc,key:src.key});
+      into.appendChild(box);
+    } else {
+      into.appendChild(moneyInput(
+        function(){ return amountFor(inc,src.key); },
+        function(v){ state.overrides[src.key]=v; },100));
+    }
+  }
+
   periods.forEach(function(p){
+    var wrap=el("div","tl-wrap");
     var r=el("div","tl-row"), d=el("div","tl-date");
     d.appendChild(document.createTextNode(fmtShort(p.start)));
     if(p.thirdCheck){ var pip=el("span","pip"); pip.title="Third check this month"; d.appendChild(pip); }
     r.appendChild(d);
     var inWrap=el("div","tl-in");
+
     if(p.sources.length===1){
-      var src=p.sources[0];
-      var inc=state.incomes.filter(function(x){return x.id===src.incomeId;})[0];
-      inWrap.appendChild(moneyInput(
-        function(){ return state.overrides[src.key]!==undefined?num(state.overrides[src.key]):num(inc?inc.baseline:0); },
-        function(v){ state.overrides[src.key]=v; },100));
-    } else inWrap.appendChild(el("span","tl-multi",money0(p.income)));
+      var inc1=incOf(p.sources[0].incomeId);
+      if(inc1) sourceControl(p.sources[0],inc1,inWrap);
+      else inWrap.appendChild(el("span","tl-multi",money0(p.income)));
+    } else if(p.sources.length===0){
+      inWrap.appendChild(el("span","tl-multi","\u2014"));
+    } else {
+      var tot=el("span","tl-multi"); totCells.push({el:tot,index:p.index});
+      inWrap.appendChild(tot);
+      var chev=el("span","chev","\u203a"); inWrap.appendChild(chev);
+    }
     r.appendChild(inWrap);
     var out=el("div","tl-out"); r.appendChild(out); outCells.push(out);
-    tl.appendChild(r);
+    wrap.appendChild(r);
+
+    if(p.sources.length>1){
+      r.classList.add("tappable");
+      var detail=el("div","tl-detail");
+      p.sources.forEach(function(src){
+        var inc=incOf(src.incomeId); if(!inc) return;
+        var line=el("div","tl-src");
+        line.appendChild(el("span","tl-srcname",inc.name));
+        sourceControl(src,inc,line);
+        detail.appendChild(line);
+      });
+      wrap.appendChild(detail);
+      r.addEventListener("click",safe(function(e){
+        if(e.target && e.target.tagName==="INPUT") return;
+        var open=detail.classList.toggle("open");
+        if(open) chev.classList.add("open"); else chev.classList.remove("open");
+      }));
+    }
+    tl.appendChild(wrap);
   });
 
   var stand=el("section","card");
@@ -741,6 +840,8 @@ function renderPlan(m){
       outCells[i].textContent=(p.free>=0?"+":"")+money0(p.free);
       outCells[i].style.color=p.free>=0?C.free:C.short;
     });
+    amtCells.forEach(function(c){ c.el.textContent=money0(amountFor(c.inc,c.key)); });
+    totCells.forEach(function(c){ if(ps[c.index]) c.el.textContent=money0(ps[c.index].income); });
     owedSlot.innerHTML="";
     owedSlot.appendChild(lineRow("Owed across all debts","",money(t.debtBal),C.debt,true));
   };
@@ -748,15 +849,35 @@ function renderPlan(m){
 }
 
 function renderIncome(m){
-  var card=el("section","card");
+  var card=el("section","card"), estCells=[];
   card.appendChild(el("h2",null,"Money coming in"));
   card.appendChild(el("p","muted","Set a baseline you can count on in a light pay period, not your best one. Every bill and fund below gets sized to fit that number, so a slow stretch never breaks the plan."));
   state.incomes.forEach(function(inc,idx){
     var b=el("div","block");
     b.appendChild(row([textInput(function(){return inc.name;},function(v){inc.name=v;})],
       idx>0?function(){ state.incomes=state.incomes.filter(function(x){return x.id!==inc.id;}); touched(); render(); }:null));
-    b.appendChild(row([el("label",null,"Typical check"),moneyInput(function(){return num(inc.baseline);},function(v){inc.baseline=v;})]));
-    b.appendChild(row([el("label",null,"A slow check"),moneyInput(function(){return num(inc.low);},function(v){inc.low=v;})]));
+    var kind=document.createElement("select"); kind.className="sel";
+    [["fixed","Same amount each check"],["daily","By the day worked"]].forEach(function(o){
+      var op=document.createElement("option"); op.value=o[0]; op.textContent=o[1]; kind.appendChild(op);
+    });
+    kind.value=inc.payType==="daily"?"daily":"fixed";
+    kind.addEventListener("change",safe(function(){ inc.payType=kind.value; touched(); render(); }));
+    b.appendChild(row([el("label",null,"How it's paid"),kind]));
+
+    if(inc.payType==="daily"){
+      b.appendChild(row([el("label",null,"Take-home per day"),
+        moneyInput(function(){return num(inc.dayRate);},function(v){inc.dayRate=v;})]));
+      b.appendChild(row([el("label",null,"Days in a typical check"),
+        countInput(function(){return num(inc.typicalDays);},function(v){inc.typicalDays=v;})]));
+      b.appendChild(row([el("label",null,"Fewest days you'd work"),
+        countInput(function(){return num(inc.lowDays);},function(v){inc.lowDays=v;})]));
+      var est=el("p","muted foot");
+      estCells.push({el:est,inc:inc});
+      b.appendChild(est);
+    } else {
+      b.appendChild(row([el("label",null,"Typical check"),moneyInput(function(){return num(inc.baseline);},function(v){inc.baseline=v;})]));
+      b.appendChild(row([el("label",null,"A slow check"),moneyInput(function(){return num(inc.low);},function(v){inc.low=v;})]));
+    }
     var sel=document.createElement("select"); sel.className="sel";
     [["weekly","Every week"],["biweekly","Every 2 weeks"],["semimonthly","1st and 15th"],["monthly","Once a month"]].forEach(function(o){
       var op=document.createElement("option"); op.value=o[0]; op.textContent=o[1]; sel.appendChild(op);
@@ -783,12 +904,19 @@ function renderIncome(m){
   m.appendChild(test);
 
   refresh=function(){
+    estCells.forEach(function(c){
+      c.el.textContent="A typical check works out to "+money(num(c.inc.dayRate)*num(c.inc.typicalDays))
+        +", a light one "+money(num(c.inc.dayRate)*num(c.inc.lowDays))
+        +". Use take-home, not gross \u2014 and set the days for each specific check on the Plan tab.";
+    });
     body.innerHTML="";
-    var inc=state.incomes[0], t=totals();
+    var t=totals();
     var committed=(t.bills+t.debtMin+num(state.extraDebtMonthly)+t.spend+t.save)*PER_CHECK;
     var GREEN=cssVar("--free"), RED=cssVar("--short");
-    var typical=num(inc?inc.baseline:0), low=num(inc?inc.low:0);
-    body.appendChild(lineRow("A typical check","",money(typical)));
+    var typical=0, low=0;
+    state.incomes.forEach(function(x){ typical+=perPeriod(x,"typical"); low+=perPeriod(x,"low"); });
+    body.appendChild(lineRow("A typical check",
+      state.incomes.length>1?state.incomes.length+" incomes together":"",money(typical)));
     body.appendChild(lineRow("Committed per check","bills, debt, life",money(committed)));
     var gapT=typical-committed;
     body.appendChild(lineRow(gapT>=0?"Left over":"Short by","",money(Math.abs(gapT)),gapT>=0?GREEN:RED,true));
