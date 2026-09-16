@@ -195,7 +195,7 @@ window.FIREBASE_CONFIG = {
 (function () {
 "use strict";
 
-var BUILD = "2026-09-15e";
+var BUILD = "2026-09-15f";
 var LS = "paycheck-ledger-v2";
 var HORIZON = 13;
 var PER_CHECK = 12 / 26;
@@ -951,7 +951,8 @@ function renderDebt(m){
 function renderData(m){
   var s=el("section","card");
   s.appendChild(el("h2",null,"Where your numbers live"));
-  if(store==="db") s.appendChild(el("p","muted","Saved to your Claude account and mirrored on this device. Open the page anywhere you're signed in and your numbers follow."));
+  if(store==="cloud") s.appendChild(el("p","muted","Synced to your shared household budget and mirrored on this phone. Either of you can open it anywhere and see the same numbers. The mirror means it still works with no signal — it catches up when you're back online."));
+  else if(store==="db") s.appendChild(el("p","muted","Saved to your Claude account and mirrored on this device. Open the page anywhere you're signed in and your numbers follow."));
   else if(store==="local") s.appendChild(el("p","muted","Saved in this browser, on this device only. Nothing leaves the device — which also means nothing follows you to another one. Back up before you clear browsing data or change phones."));
   else { var a=el("div","alarm","This browser is blocking storage, so nothing is being saved. Anything you type is lost when you close the page. Back up to a file before you go, or open the page from a different browser."); s.appendChild(a); }
   m.appendChild(s);
