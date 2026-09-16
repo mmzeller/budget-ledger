@@ -151,15 +151,6 @@ select.sel, input.date { flex:1; font-size:15px; }
 .result-note { font-size:13px; color:var(--ink-soft); margin-top:6px; }
 .reset { font:inherit; font-size:12px; background:none; border:none; color:var(--ink-faint);
   text-decoration:underline; cursor:pointer; padding:10px; width:100%; }
-.gate { max-width:420px; margin:28px auto; }
-.gate h2 { font-size:19px; margin-bottom:6px; }
-.field { display:flex; flex-direction:column; gap:6px; margin-bottom:10px; }
-.field label { font-size:12px; color:var(--ink-soft); }
-.field input { width:100%; }
-.primary { font:inherit; font-size:15px; font-weight:600; width:100%; padding:13px;
-  background:var(--ink); color:var(--paper); border:1px solid var(--ink); border-radius:4px; cursor:pointer; }
-.gate-err { font-size:13px; color:var(--short); margin-top:10px; line-height:1.5; min-height:1px; }
-.spin { text-align:center; padding:48px 20px; color:var(--ink-faint); font-size:14px; }
 .errline { font-family:ui-monospace,SFMono-Regular,Menlo,monospace; font-size:11px; line-height:1.5;
   color:var(--short); padding:6px 0; border-bottom:1px solid var(--rule); word-break:break-word; }
 .build { font-size:11px; color:var(--ink-faint); text-align:center; padding:4px 0 20px; }
@@ -177,25 +168,10 @@ select.sel, input.date { flex:1; font-size:15px; }
 <main id="main"></main>
 
 <script>
-/* ============================================================
-   SHARED-HOUSEHOLD SETUP — this is the only block you edit.
-   Paste the config from Firebase console > Project settings >
-   Your apps > Web app. Leave projectId empty to keep the
-   ledger on this device only. See SETUP.md.
-   ============================================================ */
-window.FIREBASE_CONFIG = {
-  apiKey: "",
-  authDomain: "",
-  projectId: "",
-  appId: ""
-};
-</script>
-
-<script>
 (function () {
 "use strict";
 
-var BUILD = "2026-09-15d";
+var BUILD = "2026-09-15b";
 var LS = "paycheck-ledger-v2";
 var HORIZON = 13;
 var PER_CHECK = 12 / 26;
@@ -234,9 +210,9 @@ function seed(){
       {id:uid(),name:"Car insurance",amount:0,dueDay:5}
     ],
     debts:[
-      {id:uid(),name:"Credit card",balance:0,apr:0,minimum:0},
-      {id:uid(),name:"Loan",balance:0,apr:0,minimum:0},
-      {id:uid(),name:"Payment plan",balance:0,apr:0,minimum:0}
+      {id:uid(),name:"Apple Card",balance:0,apr:26.99,minimum:0},
+      {id:uid(),name:"Student loans",balance:0,apr:5.5,minimum:0},
+      {id:uid(),name:"Medical",balance:0,apr:0,minimum:0}
     ],
     life:[
       {id:uid(),name:"Groceries",kind:"spend",monthly:0},
@@ -328,7 +304,7 @@ function buildPeriods(){
     var start=dates[i], end=dates[i+1], income=0, sources=[];
     state.incomes.forEach(function(inc){
       incomeEvents(inc,start,end).forEach(function(d){
-        var k=inc.id+"_"+toISO(d);
+        var k=inc.id+"|"+toISO(d);
         var amt=state.overrides[k]!==undefined?num(state.overrides[k]):num(inc.baseline);
         income+=amt; sources.push({incomeId:inc.id,date:d,amount:amt,key:k});
       });
@@ -412,7 +388,6 @@ function probeLocal(){
   }catch(e){ return false; }
 }
 function storeLabel(){
-  if(store==="cloud") return "Synced";
   if(store==="db") return "Saved to your Claude account";
   if(store==="local") return "Saved on this device";
   return "Not saving";
@@ -433,7 +408,6 @@ function touched(){
   saveTimer=setTimeout(flush,800);
 }
 function flush(){
-  if(cloud){ cloud.save(snapshotState()); return; }
   if(!docRef){ idle(); return; }
   if(writing){ pendingWrite=true; return; }
   writing=true;
@@ -450,9 +424,6 @@ function initStorage(){
     store="local";
     try{ var raw=localStorage.getItem(LS); if(raw) state=normalize(JSON.parse(raw)); }catch(e){}
   }
-  var cfg=window.FIREBASE_CONFIG;
-  if(cfg && cfg.projectId){ gate="loading"; render(); return; }
-
   render(); idle();
 
   if(!(window.claude && typeof window.claude.use==="function")) return;
@@ -588,73 +559,12 @@ function lineRow(name,when,amt,color,isTotal){
 }
 function btn(cls,label,fn){ var b=el("button",cls,label); b.addEventListener("click",safe(fn)); return b; }
 
-/* ===================== cloud bridge ===================== */
-var cloud=null, gate=null, gateErr="", gateBusy=false, remotePending=null;
-function snapshotState(){ return JSON.parse(JSON.stringify(state)); }
-function isEditing(){
-  var a=document.activeElement;
-  return !!(a && (a.tagName==="INPUT"||a.tagName==="SELECT"));
-}
-document.addEventListener("blur",function(){
-  if(remotePending && !isEditing()){
-    var o=remotePending; remotePending=null;
-    state=normalize(o); cacheLocal(); render();
-  }
-},true);
-
-window.Ledger={
-  build:BUILD,
-  getState:snapshotState,
-  /* a change from the other phone — never stomp on a field being typed in */
-  applyRemote:function(obj){
-    if(isEditing()){ remotePending=obj; return; }
-    state=normalize(obj); cacheLocal(); render();
-  },
-  attach:function(c){ cloud=c; gate=null; store="cloud"; render(); idle(); },
-  detach:function(){ cloud=null; store=lsOK?"local":"none"; },
-  status:function(t,bad){ setStatus(t,!!bad); },
-  askSignIn:function(handler,err){
-    gate="signin"; gateErr=err||""; gateBusy=false; window.__gateSubmit=handler; render();
-  },
-  connecting:function(){ gate="loading"; render(); },
-  failed:function(msg){ gate=null; logError(msg); render(); }
-};
-
-function renderGate(){
-  var t=document.getElementById("tabs"); if(t) t.style.display="none";
-  var m=document.getElementById("main"); m.innerHTML="";
-  if(gate==="loading"){ m.appendChild(el("div","spin","Connecting to your household…")); return; }
-  var c=el("section","card gate");
-  c.appendChild(el("h2",null,"Sign in"));
-  c.appendChild(el("p","muted","This ledger is shared between the two of you. Use the account that was set up for you."));
-  var f1=el("div","field"); f1.appendChild(el("label",null,"Email"));
-  var email=document.createElement("input");
-  email.type="email"; email.autocomplete="username"; email.setAttribute("autocapitalize","none");
-  email.placeholder="you@example.com"; f1.appendChild(email); c.appendChild(f1);
-  var f2=el("div","field"); f2.appendChild(el("label",null,"Password"));
-  var pass=document.createElement("input");
-  pass.type="password"; pass.autocomplete="current-password"; f2.appendChild(pass); c.appendChild(f2);
-  var errBox=el("div","gate-err",gateErr);
-  var go=el("button","primary",gateBusy?"Signing in…":"Sign in");
-  function submit(){
-    if(gateBusy) return;
-    if(!email.value||!pass.value){ errBox.textContent="Enter both an email and a password."; return; }
-    gateBusy=true; go.textContent="Signing in…"; errBox.textContent="";
-    window.__gateSubmit(email.value.trim(),pass.value);
-  }
-  go.addEventListener("click",submit);
-  pass.addEventListener("keydown",function(e){ if(e.key==="Enter") submit(); });
-  c.appendChild(go); c.appendChild(errBox);
-  m.appendChild(c);
-}
-
 /* ===================== render ===================== */
 var refresh=function(){};
 var TABS=[["plan","Plan"],["income","Income"],["bills","Bills"],["life","Life"],["debt","Debt"],["data","Data"]];
 
 function render(){
-  if(gate){ renderGate(); return; }
-  var nav=document.getElementById("tabs"); nav.style.display=""; nav.innerHTML="";
+  var nav=document.getElementById("tabs"); nav.innerHTML="";
   TABS.forEach(function(t){
     nav.appendChild(btn("tab"+(tab===t[0]?" on":""),t[1],function(){ tab=t[0]; render(); window.scrollTo(0,0); }));
   });
@@ -734,7 +644,7 @@ function renderPlan(m){
     n.bills.forEach(function(b){ detailBody.appendChild(lineRow(b.name,fmtShort(b.date),money(b.amount))); });
     detailBody.appendChild(lineRow("Debt payments","spread evenly",money(n.debt)));
     detailBody.appendChild(lineRow("Spending money","groceries, gas, fun",money(n.spend)));
-    detailBody.appendChild(lineRow("Into savings pots","your savings goals",money(n.save)));
+    detailBody.appendChild(lineRow("Into savings pots","vacation, shoes, repairs",money(n.save)));
     detailBody.appendChild(lineRow(n.free>=0?"Unassigned":"Short","",money(n.free),n.free>=0?C.free:C.short,true));
     ps.forEach(function(p,i){
       if(!outCells[i]) return;
@@ -916,7 +826,7 @@ function renderDebt(m){
   var bS=btn("seg-btn"+(state.strategy==="snowball"?" on":""),"Smallest balance first",function(){ state.strategy="snowball"; touched(); render(); });
   seg.appendChild(bA); seg.appendChild(bS); push.appendChild(seg);
   push.appendChild(el("p","muted",state.strategy==="avalanche"
-    ? "Costs you the least. Whatever carries the highest rate goes first."
+    ? "Costs you the least. The Apple Card almost certainly goes first."
     : "Costs a bit more in interest, but you clear a whole debt sooner — which is the thing that actually keeps people going."));
   var slot=el("div"); push.appendChild(slot); m.appendChild(push);
 
@@ -956,14 +866,6 @@ function renderData(m){
   else { var a=el("div","alarm","This browser is blocking storage, so nothing is being saved. Anything you type is lost when you close the page. Back up to a file before you go, or open the page from a different browser."); s.appendChild(a); }
   m.appendChild(s);
 
-  if(cloud){
-    var acc=el("section","card");
-    acc.appendChild(el("h2",null,"Account"));
-    acc.appendChild(el("p","muted","Signed in as "+cloud.email+". You both write to the same budget, and a change on one phone shows up on the other within a second or two. If you're both typing in the same field at once, the last save wins."));
-    acc.appendChild(btn("action","Sign out",function(){ cloud.signOut(); }));
-    m.appendChild(acc);
-  }
-
   var f=el("section","card");
   f.appendChild(el("h2",null,"Files"));
   f.appendChild(el("p","muted","Back up every few paychecks. It's a small text file and it's the only copy that can't be wiped by a browser."));
@@ -997,78 +899,6 @@ function renderData(m){
 
 initStorage();
 })();
-</script>
-
-<script type="module">
-/* Optional shared-household layer. Inert unless FIREBASE_CONFIG is filled in. */
-const cfg = window.FIREBASE_CONFIG;
-if (cfg && cfg.projectId) {
-  const V = "12.17.1";
-  const cdn = "https://www.gstatic.com/firebasejs/" + V + "/";
-  try {
-    const [core, auth, fs] = await Promise.all([
-      import(cdn + "firebase-app.js"),
-      import(cdn + "firebase-auth.js"),
-      import(cdn + "firebase-firestore.js")
-    ]);
-
-    const app = core.initializeApp(cfg);
-    const a = auth.getAuth(app);
-    await auth.setPersistence(a, auth.browserLocalPersistence);
-
-    let db;
-    try {
-      db = fs.initializeFirestore(app, {
-        localCache: fs.persistentLocalCache({ tabManager: fs.persistentMultipleTabManager() })
-      });
-    } catch (e) {
-      db = fs.getFirestore(app);   // private browsing blocks the cache; memory is fine
-    }
-    const ref = fs.doc(db, "budgets", "household");
-
-    const friendly = (code) => ({
-      "auth/invalid-email": "That doesn't look like an email address.",
-      "auth/invalid-credential": "Wrong email or password.",
-      "auth/wrong-password": "Wrong email or password.",
-      "auth/user-not-found": "No account for that email. It has to be created in the Firebase console first.",
-      "auth/too-many-requests": "Too many tries. Wait a minute and try again.",
-      "auth/network-request-failed": "No connection. Try again when you're back online."
-    })[code] || ("Sign-in failed (" + code + ").");
-
-    const promptSignIn = (err) => {
-      window.Ledger.askSignIn(async (email, pass) => {
-        try { await auth.signInWithEmailAndPassword(a, email, pass); }
-        catch (e) { promptSignIn(friendly(e.code)); }
-      }, err);
-    };
-
-    let unsub = null;
-    auth.onAuthStateChanged(a, (user) => {
-      if (unsub) { unsub(); unsub = null; }
-      if (!user) { window.Ledger.detach(); promptSignIn(""); return; }
-
-      let seeded = false;
-      unsub = fs.onSnapshot(ref,
-        (snap) => {
-          if (snap.metadata.hasPendingWrites) return;   // our own write echoing back
-          if (snap.exists()) { window.Ledger.applyRemote(snap.data()); seeded = true; }
-          else if (!seeded) { seeded = true; fs.setDoc(ref, window.Ledger.getState()); }
-        },
-        (e) => window.Ledger.status("Sync error: " + e.code, true)
-      );
-
-      window.Ledger.attach({
-        email: user.email,
-        save: (obj) => fs.setDoc(ref, obj)
-          .then(() => window.Ledger.status("Synced"))
-          .catch((e) => window.Ledger.status("Not synced (" + e.code + ")", true)),
-        signOut: () => auth.signOut(a)
-      });
-    });
-  } catch (e) {
-    window.Ledger.failed("Cloud sync unavailable: " + (e && e.message ? e.message : e));
-  }
-}
 </script>
 </body>
 </html>
