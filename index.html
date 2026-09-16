@@ -133,6 +133,16 @@ select.sel, input.date { flex:1; font-size:15px; }
 .tl-multi { font-size:14px; font-weight:600; padding:8px 0; }
 .tl-out { width:76px; text-align:right; font-size:14px; font-weight:600; flex:none; }
 
+.srow { padding:11px 0; border-bottom:1px solid var(--rule); }
+.srow:last-of-type { border-bottom:none; }
+.srow-top { display:flex; align-items:center; gap:4px; }
+.srow-top input { flex:1; min-width:0; font-size:16px; font-weight:500; }
+.srow-fields { display:flex; align-items:flex-end; gap:12px; margin-top:9px; flex-wrap:wrap; }
+.sfield { display:flex; flex-direction:column; gap:4px; }
+.sflabel { font-size:11px; color:var(--ink-faint); letter-spacing:.01em; }
+.sfield .mi { width:120px; }
+.readout { font-size:15px; font-weight:600; padding:8px 0; min-width:64px; }
+
 .tl-wrap { border-bottom:1px solid var(--rule); }
 .tl-wrap:last-child { border-bottom:none; }
 .tl-row { border-bottom:none; }
@@ -167,6 +177,9 @@ select.sel, input.date { flex:1; font-size:15px; }
 .result-note { font-size:13px; color:var(--ink-soft); margin-top:6px; }
 .reset { font:inherit; font-size:12px; background:none; border:none; color:var(--ink-faint);
   text-decoration:underline; cursor:pointer; padding:10px; width:100%; }
+.update { position:sticky; top:0; z-index:30; background:var(--free); color:#fff;
+  font-size:13px; font-weight:600; padding:11px 14px; text-align:center; cursor:pointer;
+  border:none; width:100%; font-family:inherit; }
 .gate { max-width:420px; margin:28px auto; }
 .gate h2 { font-size:19px; margin-bottom:6px; }
 .field { display:flex; flex-direction:column; gap:6px; margin-bottom:10px; }
@@ -211,7 +224,7 @@ window.FIREBASE_CONFIG = {
 (function () {
 "use strict";
 
-var BUILD = "2026-09-15h";
+var BUILD = "2026-09-15j";
 var LS = "paycheck-ledger-v2";
 var HORIZON = 13;
 var PER_CHECK = 12 / 26;
@@ -628,6 +641,26 @@ function countInput(get,set,width){
   i.addEventListener("input",safe(function(){ set(num(i.value)); refresh(); touched(); }));
   return i;
 }
+/* name on its own line, numbers labelled underneath — a phone has no room for
+   four controls side by side */
+function stackRow(nameEl,fields,onDelete){
+  var wrap=el("div","srow"), top=el("div","srow-top");
+  top.appendChild(nameEl);
+  if(onDelete){
+    var x=el("button","del","\u00d7"); x.setAttribute("aria-label","Remove");
+    x.addEventListener("click",safe(onDelete)); top.appendChild(x);
+  }
+  wrap.appendChild(top);
+  var bot=el("div","srow-fields");
+  fields.forEach(function(f){
+    var g=el("div","sfield");
+    g.appendChild(el("span","sflabel",f.label));
+    g.appendChild(f.control);
+    bot.appendChild(g);
+  });
+  wrap.appendChild(bot);
+  return wrap;
+}
 function row(kids,onDelete){
   var r=el("div","row"), b=el("div","row-body");
   kids.forEach(function(k){ b.appendChild(k); });
@@ -935,14 +968,13 @@ function renderBills(m){
   var card=el("section","card");
   card.appendChild(el("h2",null,"Bills that show up every month"));
   card.appendChild(el("p","muted","Same amount, same date, no decision to make. Anything that hits once a year — registration, insurance in full, holidays — belongs on the Life tab as something you save toward instead."));
-  var hdr=el("div","hdr");
-  hdr.appendChild(el("span",null,"Bill")); hdr.appendChild(el("span","r","Amount")); hdr.appendChild(el("span","r","Due"));
-  card.appendChild(hdr);
   state.bills.forEach(function(b){
     var day=document.createElement("input"); day.className="day"; day.setAttribute("inputmode","numeric"); day.value=b.dueDay;
     day.addEventListener("input",safe(function(){ b.dueDay=Math.min(31,Math.max(1,num(day.value)||1)); refresh(); touched(); }));
-    card.appendChild(row([textInput(function(){return b.name;},function(v){b.name=v;}),
-      moneyInput(function(){return num(b.amount);},function(v){b.amount=v;},100),day],
+    card.appendChild(stackRow(
+      textInput(function(){return b.name;},function(v){b.name=v;}),
+      [{label:"Amount",control:moneyInput(function(){return num(b.amount);},function(v){b.amount=v;},120)},
+       {label:"Day of month",control:day}],
       function(){ state.bills=state.bills.filter(function(x){return x.id!==b.id;}); touched(); render(); }));
   });
   card.appendChild(btn("add","Add a bill",function(){ state.bills.push({id:uid(),name:"New bill",amount:0,dueDay:1}); touched(); render(); }));
@@ -963,9 +995,11 @@ function renderLife(m){
   var spendItems=state.life.filter(function(l){return l.kind!=="save";});
   if(!spendItems.length) card.appendChild(el("p","muted","Nothing here yet."));
   spendItems.forEach(function(l){
-    var per=el("span","per"); perCells.push({el:per,item:l});
-    card.appendChild(row([textInput(function(){return l.name;},function(v){l.name=v;}),
-      moneyInput(function(){return num(l.monthly);},function(v){l.monthly=v;},100),per],
+    var per=el("span","readout"); perCells.push({el:per,item:l});
+    card.appendChild(stackRow(
+      textInput(function(){return l.name;},function(v){l.name=v;}),
+      [{label:"Per month",control:moneyInput(function(){return num(l.monthly);},function(v){l.monthly=v;},120)},
+       {label:"Per check",control:per}],
       function(){ state.life=state.life.filter(function(x){return x.id!==l.id;}); touched(); render(); }));
   });
   card.appendChild(btn("add","Add spending money",function(){
@@ -974,16 +1008,14 @@ function renderLife(m){
   card.appendChild(el("h3",null,"Saving up for"));
   var pots=[];
   state.life.filter(function(l){return l.kind==="save";}).forEach(function(l){
-    var wrap=el("div","pot"), per=el("span","per");
-    wrap.appendChild(row([textInput(function(){return l.name;},function(v){l.name=v;}),
-      moneyInput(function(){return num(l.monthly);},function(v){l.monthly=v;},100),per],
-      function(){ state.life=state.life.filter(function(x){return x.id!==l.id;}); touched(); render(); }));
-    var meta=el("div","pot-meta");
-    meta.appendChild(el("span","pot-lab","Goal"));
-    meta.appendChild(moneyInput(function(){return num(l.target);},function(v){l.target=v;},92));
-    meta.appendChild(el("span","pot-lab","Saved"));
-    meta.appendChild(moneyInput(function(){return num(l.saved);},function(v){l.saved=v;},92));
-    wrap.appendChild(meta);
+    var per=el("span","readout");
+    var wrap=stackRow(
+      textInput(function(){return l.name;},function(v){l.name=v;}),
+      [{label:"Per month",control:moneyInput(function(){return num(l.monthly);},function(v){l.monthly=v;},120)},
+       {label:"Per check",control:per},
+       {label:"Goal",control:moneyInput(function(){return num(l.target);},function(v){l.target=v;},120)},
+       {label:"Saved so far",control:moneyInput(function(){return num(l.saved);},function(v){l.saved=v;},120)}],
+      function(){ state.life=state.life.filter(function(x){return x.id!==l.id;}); touched(); render(); });
     var prog=el("div","prog"), fill=el("div","prog-fill"), note=el("div","pot-note");
     prog.appendChild(fill); wrap.appendChild(prog); wrap.appendChild(note);
     card.appendChild(wrap);
@@ -1017,18 +1049,16 @@ function renderLife(m){
 function renderDebt(m){
   var owe=el("section","card");
   owe.appendChild(el("h2",null,"What you owe"));
-  var hdr=el("div","hdr");
-  hdr.appendChild(el("span",null,"Debt")); hdr.appendChild(el("span","r","Balance"));
-  hdr.appendChild(el("span","r","APR")); hdr.appendChild(el("span","r","Min"));
-  owe.appendChild(hdr);
   state.debts.forEach(function(d){
     var pct=el("div","pct"), pi=document.createElement("input");
     pi.setAttribute("inputmode","decimal"); pi.value=d.apr;
     pi.addEventListener("input",safe(function(){ d.apr=num(pi.value); refresh(); touched(); }));
     pct.appendChild(pi); pct.appendChild(el("span","pct-sign","%"));
-    owe.appendChild(row([textInput(function(){return d.name;},function(v){d.name=v;}),
-      moneyInput(function(){return num(d.balance);},function(v){d.balance=v;},104),pct,
-      moneyInput(function(){return num(d.minimum);},function(v){d.minimum=v;},84)],
+    owe.appendChild(stackRow(
+      textInput(function(){return d.name;},function(v){d.name=v;}),
+      [{label:"Balance",control:moneyInput(function(){return num(d.balance);},function(v){d.balance=v;},120)},
+       {label:"Rate",control:pct},
+       {label:"Minimum",control:moneyInput(function(){return num(d.minimum);},function(v){d.minimum=v;},110)}],
       function(){ state.debts=state.debts.filter(function(x){return x.id!==d.id;}); touched(); render(); }));
   });
   owe.appendChild(btn("add","Add a debt",function(){
@@ -1124,7 +1154,32 @@ function renderData(m){
   m.appendChild(q);
 }
 
+/* iOS caches a home-screen web app hard. Ask the server what build is live and
+   offer a cache-busting reload if it differs from the one running. */
+function checkForUpdate(){
+  if(!window.fetch || location.protocol==="file:") return;
+  var url=location.pathname+"?v="+Date.now();
+  fetch(url,{cache:"no-store"}).then(function(r){
+    return r.ok ? r.text() : null;
+  }).then(function(t){
+    if(!t) return;
+    var m=t.match(/var BUILD = "([^"]+)"/);
+    if(!m || m[1]===BUILD) return;
+    var b=document.createElement("button");
+    b.className="update";
+    b.textContent="Version "+m[1]+" is ready — tap to update";
+    b.addEventListener("click",function(){
+      location.replace(location.pathname+"?v="+Date.now());
+    });
+    document.body.insertBefore(b,document.body.firstChild);
+  }).catch(function(){});
+}
+
 initStorage();
+setTimeout(checkForUpdate,2500);
+document.addEventListener("visibilitychange",function(){
+  if(!document.hidden && !document.querySelector(".update")) checkForUpdate();
+});
 })();
 </script>
 
