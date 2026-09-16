@@ -198,6 +198,12 @@ select.sel, input.date { flex:1; font-size:15px; }
 .tl-srcdate { font-size:12px; color:var(--ink-faint); flex:none; }
 .tl-cover { font-size:11px; color:var(--ink-faint); padding:2px 0 6px;
   border-bottom:1px solid var(--rule); }
+.chev { font-size:16px; color:var(--ink-faint); flex:none; padding:0 0 0 6px;
+  display:inline-block; transition:transform .15s ease; }
+.chev.open { transform:rotate(90deg); }
+.tl-row { cursor:pointer; }
+.tl-swatches { display:flex; gap:3px; flex:none; margin-right:7px; }
+.tl-swatches .swatch { margin-right:0; }
 .swatch { width:9px; height:9px; border-radius:2px; flex:none; display:inline-block;
   margin-right:6px; vertical-align:-1px; }
 .bonus { width:7px; height:7px; border-radius:50%; flex:none; }
@@ -271,7 +277,7 @@ window.FIREBASE_CONFIG = {
 (function () {
 "use strict";
 
-var BUILD = "2026-09-15u";
+var BUILD = "2026-09-15v";
 var LS = "paycheck-ledger-v2";
 var HORIZON_DAYS = 120;
 var PER_CHECK = 12 / 26;
@@ -967,6 +973,7 @@ function renderGate(){
 /* ===================== render ===================== */
 var refresh=function(){};
 var openCats={};   /* per-device, not synced — collapsing on one phone shouldn't collapse the other */
+var openRows={};   /* same, for the timeline */
 var TABS=[["plan","Plan"],["income","Income"],["bills","Bills"],["life","Life"],["debt","Debt"],["data","Data"]];
 
 function render(){
@@ -1027,7 +1034,7 @@ function renderPlan(m){
 
   var tlCard=el("section","card");
   tlCard.appendChild(el("h2",null,"Every check coming in"));
-  tlCard.appendChild(el("p","muted","One row per payday, whoever it belongs to. The figure on the right is what's left after that stretch's bills and set-asides. For pay by the day, enter the days worked and the dollars follow."));
+  tlCard.appendChild(el("p","muted","One row per payday, whoever it belongs to \u2014 the colour tells you whose. Tap a row to set the days worked or the amount. The figure on the right is what's left after that stretch's bills and set-asides."));
   var tl=el("div"); tlCard.appendChild(tl);
   var key=el("div","bonus-key");
   state.incomes.forEach(function(inc){
@@ -1078,16 +1085,39 @@ function renderPlan(m){
     });
     r.appendChild(d);
     var inWrap=el("div","tl-in");
+    if(p.sources.length){
+      var sws=el("div","tl-swatches");
+      var shown={};
+      p.sources.forEach(function(src){
+        if(shown[src.incomeId]) return;
+        shown[src.incomeId]=true;
+        var sw=el("span","swatch");
+        sw.style.background=incomeColor(src.incomeId);
+        var i0=incOf(src.incomeId);
+        sw.title=i0?i0.name:"";
+        sws.appendChild(sw);
+      });
+      inWrap.appendChild(sws);
+    }
     var tot=el("span","tl-multi");
     if(p.sources.length) totCells.push({el:tot,index:p.index}); else tot.textContent="\u2014";
     inWrap.appendChild(tot);
+    var chev=el("span","chev","\u203a");
+    inWrap.appendChild(chev);
     r.appendChild(inWrap);
     var out=el("div","tl-out"); r.appendChild(out); outCells.push(out);
     wrap.appendChild(r);
 
     /* every check in this stretch, always visible — no tapping */
     if(p.sources.length){
-      var detail=el("div","tl-detail open");
+      var rowKey=toISO(p.start);
+      var detail=el("div","tl-detail");
+      if(openRows[rowKey]){ detail.classList.add("open"); chev.classList.add("open"); }
+      r.addEventListener("click",safe(function(){
+        var nowOpen=detail.classList.toggle("open");
+        chev.classList[nowOpen?"add":"remove"]("open");
+        openRows[rowKey]=nowOpen;
+      }));
       p.sources.forEach(function(src){
         var inc=incOf(src.incomeId); if(!inc) return;
         var line=el("div","tl-src");
