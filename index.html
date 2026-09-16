@@ -151,6 +151,17 @@ select.sel, input.date { flex:1; font-size:15px; }
 .result-note { font-size:13px; color:var(--ink-soft); margin-top:6px; }
 .reset { font:inherit; font-size:12px; background:none; border:none; color:var(--ink-faint);
   text-decoration:underline; cursor:pointer; padding:10px; width:100%; }
+.gate { max-width:420px; margin:28px auto; }
+.gate h2 { font-size:19px; margin-bottom:6px; }
+.field { display:flex; flex-direction:column; gap:6px; margin-bottom:10px; }
+.field label { font-size:12px; color:var(--ink-soft); }
+.field input { width:100%; }
+.primary { font:inherit; font-size:15px; font-weight:600; width:100%; padding:13px;
+  background:var(--ink); color:var(--paper); border:1px solid var(--ink); border-radius:4px; cursor:pointer; }
+.gate-err { font-size:13px; color:var(--short); margin-top:10px; line-height:1.5; min-height:1px; }
+.spin { text-align:center; padding:48px 20px; color:var(--ink-faint); font-size:14px; }
+.errline { font-family:ui-monospace,SFMono-Regular,Menlo,monospace; font-size:11px; line-height:1.5;
+  color:var(--short); padding:6px 0; border-bottom:1px solid var(--rule); word-break:break-word; }
 .build { font-size:11px; color:var(--ink-faint); text-align:center; padding:4px 0 20px; }
 @media (prefers-reduced-motion:reduce) { *, .prog-fill { transition:none !important; } }
 </style>
@@ -166,10 +177,25 @@ select.sel, input.date { flex:1; font-size:15px; }
 <main id="main"></main>
 
 <script>
+/* ============================================================
+   SHARED-HOUSEHOLD SETUP — this is the only block you edit.
+   Paste the config from Firebase console > Project settings >
+   Your apps > Web app. Leave projectId empty to keep the
+   ledger on this device only. See SETUP.md.
+   ============================================================ */
+window.FIREBASE_CONFIG = {
+  apiKey: "",
+  authDomain: "",
+  projectId: "",
+  appId: ""
+};
+</script>
+
+<script>
 (function () {
 "use strict";
 
-var BUILD = "2026-09-15";
+var BUILD = "2026-09-15d";
 var LS = "paycheck-ledger-v2";
 var HORIZON = 13;
 var PER_CHECK = 12 / 26;
@@ -208,9 +234,9 @@ function seed(){
       {id:uid(),name:"Car insurance",amount:0,dueDay:5}
     ],
     debts:[
-      {id:uid(),name:"Apple Card",balance:0,apr:26.99,minimum:0},
-      {id:uid(),name:"Student loans",balance:0,apr:5.5,minimum:0},
-      {id:uid(),name:"Medical",balance:0,apr:0,minimum:0}
+      {id:uid(),name:"Credit card",balance:0,apr:0,minimum:0},
+      {id:uid(),name:"Loan",balance:0,apr:0,minimum:0},
+      {id:uid(),name:"Payment plan",balance:0,apr:0,minimum:0}
     ],
     life:[
       {id:uid(),name:"Groceries",kind:"spend",monthly:0},
@@ -302,7 +328,7 @@ function buildPeriods(){
     var start=dates[i], end=dates[i+1], income=0, sources=[];
     state.incomes.forEach(function(inc){
       incomeEvents(inc,start,end).forEach(function(d){
-        var k=inc.id+"|"+toISO(d);
+        var k=inc.id+"_"+toISO(d);
         var amt=state.overrides[k]!==undefined?num(state.overrides[k]):num(inc.baseline);
         income+=amt; sources.push({incomeId:inc.id,date:d,amount:amt,key:k});
       });
@@ -357,6 +383,21 @@ function simulate(extraMonthly,strategy){
   return {months:month,interest:interest,payoff:payoff,stalled:month>=MAX};
 }
 
+/* ===================== error surface ===================== */
+var errors=[];
+function logError(msg){
+  errors.push(new Date().toLocaleTimeString()+" — "+String(msg));
+  if(errors.length>8) errors.shift();
+  try{ setStatus("Something broke — open Data",true); }catch(e){}
+}
+function safe(fn){
+  return function(){ try{ return fn.apply(this,arguments); }catch(err){ logError(err&&err.message?err.message:err); } };
+}
+window.onerror=function(m,src,line,col,e){ logError((e&&e.message?e.message:m)+" @"+line+":"+col); };
+window.addEventListener("unhandledrejection",function(ev){
+  var r=ev.reason; logError("async: "+(r&&r.message?r.message:r));
+});
+
 /* ===================== storage (verified) ===================== */
 var docRef=null, saveTimer=null, writing=false, pendingWrite=false;
 var lsOK=false, store="none";
@@ -371,6 +412,7 @@ function probeLocal(){
   }catch(e){ return false; }
 }
 function storeLabel(){
+  if(store==="cloud") return "Synced";
   if(store==="db") return "Saved to your Claude account";
   if(store==="local") return "Saved on this device";
   return "Not saving";
@@ -391,6 +433,7 @@ function touched(){
   saveTimer=setTimeout(flush,800);
 }
 function flush(){
+  if(cloud){ cloud.save(snapshotState()); return; }
   if(!docRef){ idle(); return; }
   if(writing){ pendingWrite=true; return; }
   writing=true;
@@ -407,6 +450,9 @@ function initStorage(){
     store="local";
     try{ var raw=localStorage.getItem(LS); if(raw) state=normalize(JSON.parse(raw)); }catch(e){}
   }
+  var cfg=window.FIREBASE_CONFIG;
+  if(cfg && cfg.projectId){ gate="loading"; render(); return; }
+
   render(); idle();
 
   if(!(window.claude && typeof window.claude.use==="function")) return;
@@ -517,13 +563,13 @@ function moneyInput(get,set,width){
   var i=document.createElement("input");
   i.setAttribute("inputmode","decimal"); i.placeholder="0";
   var v=get(); i.value=v?String(v):"";
-  i.addEventListener("input",function(){ set(num(i.value)); touched(); refresh(); });
-  i.addEventListener("blur",function(){ var n=num(i.value); i.value=n?String(n):""; });
+  i.addEventListener("input",safe(function(){ set(num(i.value)); refresh(); touched(); }));
+  i.addEventListener("blur",safe(function(){ var n=num(i.value); i.value=n?String(n):""; }));
   w.appendChild(i); return w;
 }
 function textInput(get,set){
   var i=document.createElement("input"); i.className="text"; i.value=get();
-  i.addEventListener("input",function(){ set(i.value); touched(); refresh(); });
+  i.addEventListener("input",safe(function(){ set(i.value); refresh(); touched(); }));
   return i;
 }
 function row(kids,onDelete){
@@ -540,14 +586,75 @@ function lineRow(name,when,amt,color,isTotal){
   var a=el("span","line-amt",amt); if(color) a.style.color=color;
   l.appendChild(a); return l;
 }
-function btn(cls,label,fn){ var b=el("button",cls,label); b.addEventListener("click",fn); return b; }
+function btn(cls,label,fn){ var b=el("button",cls,label); b.addEventListener("click",safe(fn)); return b; }
+
+/* ===================== cloud bridge ===================== */
+var cloud=null, gate=null, gateErr="", gateBusy=false, remotePending=null;
+function snapshotState(){ return JSON.parse(JSON.stringify(state)); }
+function isEditing(){
+  var a=document.activeElement;
+  return !!(a && (a.tagName==="INPUT"||a.tagName==="SELECT"));
+}
+document.addEventListener("blur",function(){
+  if(remotePending && !isEditing()){
+    var o=remotePending; remotePending=null;
+    state=normalize(o); cacheLocal(); render();
+  }
+},true);
+
+window.Ledger={
+  build:BUILD,
+  getState:snapshotState,
+  /* a change from the other phone — never stomp on a field being typed in */
+  applyRemote:function(obj){
+    if(isEditing()){ remotePending=obj; return; }
+    state=normalize(obj); cacheLocal(); render();
+  },
+  attach:function(c){ cloud=c; gate=null; store="cloud"; render(); idle(); },
+  detach:function(){ cloud=null; store=lsOK?"local":"none"; },
+  status:function(t,bad){ setStatus(t,!!bad); },
+  askSignIn:function(handler,err){
+    gate="signin"; gateErr=err||""; gateBusy=false; window.__gateSubmit=handler; render();
+  },
+  connecting:function(){ gate="loading"; render(); },
+  failed:function(msg){ gate=null; logError(msg); render(); }
+};
+
+function renderGate(){
+  var t=document.getElementById("tabs"); if(t) t.style.display="none";
+  var m=document.getElementById("main"); m.innerHTML="";
+  if(gate==="loading"){ m.appendChild(el("div","spin","Connecting to your household…")); return; }
+  var c=el("section","card gate");
+  c.appendChild(el("h2",null,"Sign in"));
+  c.appendChild(el("p","muted","This ledger is shared between the two of you. Use the account that was set up for you."));
+  var f1=el("div","field"); f1.appendChild(el("label",null,"Email"));
+  var email=document.createElement("input");
+  email.type="email"; email.autocomplete="username"; email.setAttribute("autocapitalize","none");
+  email.placeholder="you@example.com"; f1.appendChild(email); c.appendChild(f1);
+  var f2=el("div","field"); f2.appendChild(el("label",null,"Password"));
+  var pass=document.createElement("input");
+  pass.type="password"; pass.autocomplete="current-password"; f2.appendChild(pass); c.appendChild(f2);
+  var errBox=el("div","gate-err",gateErr);
+  var go=el("button","primary",gateBusy?"Signing in…":"Sign in");
+  function submit(){
+    if(gateBusy) return;
+    if(!email.value||!pass.value){ errBox.textContent="Enter both an email and a password."; return; }
+    gateBusy=true; go.textContent="Signing in…"; errBox.textContent="";
+    window.__gateSubmit(email.value.trim(),pass.value);
+  }
+  go.addEventListener("click",submit);
+  pass.addEventListener("keydown",function(e){ if(e.key==="Enter") submit(); });
+  c.appendChild(go); c.appendChild(errBox);
+  m.appendChild(c);
+}
 
 /* ===================== render ===================== */
 var refresh=function(){};
 var TABS=[["plan","Plan"],["income","Income"],["bills","Bills"],["life","Life"],["debt","Debt"],["data","Data"]];
 
 function render(){
-  var nav=document.getElementById("tabs"); nav.innerHTML="";
+  if(gate){ renderGate(); return; }
+  var nav=document.getElementById("tabs"); nav.style.display=""; nav.innerHTML="";
   TABS.forEach(function(t){
     nav.appendChild(btn("tab"+(tab===t[0]?" on":""),t[1],function(){ tab=t[0]; render(); window.scrollTo(0,0); }));
   });
@@ -627,7 +734,7 @@ function renderPlan(m){
     n.bills.forEach(function(b){ detailBody.appendChild(lineRow(b.name,fmtShort(b.date),money(b.amount))); });
     detailBody.appendChild(lineRow("Debt payments","spread evenly",money(n.debt)));
     detailBody.appendChild(lineRow("Spending money","groceries, gas, fun",money(n.spend)));
-    detailBody.appendChild(lineRow("Into savings pots","vacation, shoes, repairs",money(n.save)));
+    detailBody.appendChild(lineRow("Into savings pots","your savings goals",money(n.save)));
     detailBody.appendChild(lineRow(n.free>=0?"Unassigned":"Short","",money(n.free),n.free>=0?C.free:C.short,true));
     ps.forEach(function(p,i){
       if(!outCells[i]) return;
@@ -655,10 +762,10 @@ function renderIncome(m){
       var op=document.createElement("option"); op.value=o[0]; op.textContent=o[1]; sel.appendChild(op);
     });
     sel.value=inc.cadence;
-    sel.addEventListener("change",function(){ inc.cadence=sel.value; touched(); refresh(); });
+    sel.addEventListener("change",safe(function(){ inc.cadence=sel.value; refresh(); touched(); }));
     b.appendChild(row([el("label",null,"Paid"),sel]));
     var dt=document.createElement("input"); dt.type="date"; dt.className="date"; dt.value=inc.firstPayDate||"";
-    dt.addEventListener("change",function(){ inc.firstPayDate=dt.value; touched(); refresh(); });
+    dt.addEventListener("change",safe(function(){ inc.firstPayDate=dt.value; render(); touched(); }));
     b.appendChild(row([el("label",null,"Next pay date"),dt]));
     if(idx===0) b.appendChild(el("p","muted foot","Your pay dates set the rhythm for everything else."));
     card.appendChild(b);
@@ -670,19 +777,28 @@ function renderIncome(m){
   m.appendChild(card);
 
   var test=el("section","card");
-  test.appendChild(el("h2",null,"If every check came in slow"));
+  test.appendChild(el("h2",null,"What one check has to cover"));
   var body=el("div"); test.appendChild(body);
-  test.appendChild(el("p","muted foot","If that number is negative, the fix isn't willpower — it's a smaller monthly commitment somewhere."));
+  test.appendChild(el("p","muted foot","This updates as you type. If a number below goes red, the fix isn't willpower — it's a smaller monthly commitment somewhere."));
   m.appendChild(test);
 
   refresh=function(){
     body.innerHTML="";
     var inc=state.incomes[0], t=totals();
-    if(!inc||!num(inc.low)){ body.appendChild(el("p","muted","Fill in a slow check above to stress-test the plan.")); return; }
-    body.appendChild(el("p","muted","Testing against "+money(num(inc.low))+" a check instead of "+money(num(inc.baseline))+"."));
-    var gap=num(inc.low)-(t.bills*PER_CHECK)-((t.debtMin+num(state.extraDebtMonthly)+t.spend+t.save)*PER_CHECK);
-    body.appendChild(lineRow(gap>=0?"Still clears, with":"Comes up short by","",money(Math.abs(gap)),
-      gap>=0?cssVar("--free"):cssVar("--short"),true));
+    var committed=(t.bills+t.debtMin+num(state.extraDebtMonthly)+t.spend+t.save)*PER_CHECK;
+    var GREEN=cssVar("--free"), RED=cssVar("--short");
+    var typical=num(inc?inc.baseline:0), low=num(inc?inc.low:0);
+    body.appendChild(lineRow("A typical check","",money(typical)));
+    body.appendChild(lineRow("Committed per check","bills, debt, life",money(committed)));
+    var gapT=typical-committed;
+    body.appendChild(lineRow(gapT>=0?"Left over":"Short by","",money(Math.abs(gapT)),gapT>=0?GREEN:RED,true));
+    if(low>0){
+      var gapL=low-committed;
+      body.appendChild(el("h3",null,"If every check came in slow"));
+      body.appendChild(el("p","muted","Testing against "+money(low)+" instead of "+money(typical)+"."));
+      body.appendChild(lineRow(gapL>=0?"Still clears, with":"Comes up short by","",money(Math.abs(gapL)),
+        gapL>=0?GREEN:RED,true));
+    }
   };
   refresh();
 }
@@ -696,7 +812,7 @@ function renderBills(m){
   card.appendChild(hdr);
   state.bills.forEach(function(b){
     var day=document.createElement("input"); day.className="day"; day.setAttribute("inputmode","numeric"); day.value=b.dueDay;
-    day.addEventListener("input",function(){ b.dueDay=Math.min(31,Math.max(1,num(day.value)||1)); touched(); refresh(); });
+    day.addEventListener("input",safe(function(){ b.dueDay=Math.min(31,Math.max(1,num(day.value)||1)); refresh(); touched(); }));
     card.appendChild(row([textInput(function(){return b.name;},function(v){b.name=v;}),
       moneyInput(function(){return num(b.amount);},function(v){b.amount=v;},100),day],
       function(){ state.bills=state.bills.filter(function(x){return x.id!==b.id;}); touched(); render(); }));
@@ -780,7 +896,7 @@ function renderDebt(m){
   state.debts.forEach(function(d){
     var pct=el("div","pct"), pi=document.createElement("input");
     pi.setAttribute("inputmode","decimal"); pi.value=d.apr;
-    pi.addEventListener("input",function(){ d.apr=num(pi.value); touched(); refresh(); });
+    pi.addEventListener("input",safe(function(){ d.apr=num(pi.value); refresh(); touched(); }));
     pct.appendChild(pi); pct.appendChild(el("span","pct-sign","%"));
     owe.appendChild(row([textInput(function(){return d.name;},function(v){d.name=v;}),
       moneyInput(function(){return num(d.balance);},function(v){d.balance=v;},104),pct,
@@ -800,7 +916,7 @@ function renderDebt(m){
   var bS=btn("seg-btn"+(state.strategy==="snowball"?" on":""),"Smallest balance first",function(){ state.strategy="snowball"; touched(); render(); });
   seg.appendChild(bA); seg.appendChild(bS); push.appendChild(seg);
   push.appendChild(el("p","muted",state.strategy==="avalanche"
-    ? "Costs you the least. The Apple Card almost certainly goes first."
+    ? "Costs you the least. Whatever carries the highest rate goes first."
     : "Costs a bit more in interest, but you clear a whole debt sooner — which is the thing that actually keeps people going."));
   var slot=el("div"); push.appendChild(slot); m.appendChild(push);
 
@@ -840,6 +956,14 @@ function renderData(m){
   else { var a=el("div","alarm","This browser is blocking storage, so nothing is being saved. Anything you type is lost when you close the page. Back up to a file before you go, or open the page from a different browser."); s.appendChild(a); }
   m.appendChild(s);
 
+  if(cloud){
+    var acc=el("section","card");
+    acc.appendChild(el("h2",null,"Account"));
+    acc.appendChild(el("p","muted","Signed in as "+cloud.email+". You both write to the same budget, and a change on one phone shows up on the other within a second or two. If you're both typing in the same field at once, the last save wins."));
+    acc.appendChild(btn("action","Sign out",function(){ cloud.signOut(); }));
+    m.appendChild(acc);
+  }
+
   var f=el("section","card");
   f.appendChild(el("h2",null,"Files"));
   f.appendChild(el("p","muted","Back up every few paychecks. It's a small text file and it's the only copy that can't be wiped by a browser."));
@@ -853,6 +977,16 @@ function renderData(m){
   f.appendChild(el("p","muted foot","Excel export needs a connection the first time; everything else works offline."));
   m.appendChild(f);
 
+  if(errors.length){
+    var e=el("section","card");
+    e.appendChild(el("h2",null,"Problems this session"));
+    e.appendChild(el("p","muted","If something looked wrong, this is what the page recorded. Send it over and it'll tell me exactly what broke."));
+    errors.forEach(function(x){
+      var d=el("div","errline",x); e.appendChild(d);
+    });
+    m.appendChild(e);
+  }
+
   var q=el("section","card quiet");
   q.appendChild(btn("reset","Clear everything and start over",function(){
     if(confirm("Clear every number and start over? This can't be undone.")){ state=seed(); touched(); flush(); render(); }
@@ -863,6 +997,78 @@ function renderData(m){
 
 initStorage();
 })();
+</script>
+
+<script type="module">
+/* Optional shared-household layer. Inert unless FIREBASE_CONFIG is filled in. */
+const cfg = window.FIREBASE_CONFIG;
+if (cfg && cfg.projectId) {
+  const V = "12.17.1";
+  const cdn = "https://www.gstatic.com/firebasejs/" + V + "/";
+  try {
+    const [core, auth, fs] = await Promise.all([
+      import(cdn + "firebase-app.js"),
+      import(cdn + "firebase-auth.js"),
+      import(cdn + "firebase-firestore.js")
+    ]);
+
+    const app = core.initializeApp(cfg);
+    const a = auth.getAuth(app);
+    await auth.setPersistence(a, auth.browserLocalPersistence);
+
+    let db;
+    try {
+      db = fs.initializeFirestore(app, {
+        localCache: fs.persistentLocalCache({ tabManager: fs.persistentMultipleTabManager() })
+      });
+    } catch (e) {
+      db = fs.getFirestore(app);   // private browsing blocks the cache; memory is fine
+    }
+    const ref = fs.doc(db, "budgets", "household");
+
+    const friendly = (code) => ({
+      "auth/invalid-email": "That doesn't look like an email address.",
+      "auth/invalid-credential": "Wrong email or password.",
+      "auth/wrong-password": "Wrong email or password.",
+      "auth/user-not-found": "No account for that email. It has to be created in the Firebase console first.",
+      "auth/too-many-requests": "Too many tries. Wait a minute and try again.",
+      "auth/network-request-failed": "No connection. Try again when you're back online."
+    })[code] || ("Sign-in failed (" + code + ").");
+
+    const promptSignIn = (err) => {
+      window.Ledger.askSignIn(async (email, pass) => {
+        try { await auth.signInWithEmailAndPassword(a, email, pass); }
+        catch (e) { promptSignIn(friendly(e.code)); }
+      }, err);
+    };
+
+    let unsub = null;
+    auth.onAuthStateChanged(a, (user) => {
+      if (unsub) { unsub(); unsub = null; }
+      if (!user) { window.Ledger.detach(); promptSignIn(""); return; }
+
+      let seeded = false;
+      unsub = fs.onSnapshot(ref,
+        (snap) => {
+          if (snap.metadata.hasPendingWrites) return;   // our own write echoing back
+          if (snap.exists()) { window.Ledger.applyRemote(snap.data()); seeded = true; }
+          else if (!seeded) { seeded = true; fs.setDoc(ref, window.Ledger.getState()); }
+        },
+        (e) => window.Ledger.status("Sync error: " + e.code, true)
+      );
+
+      window.Ledger.attach({
+        email: user.email,
+        save: (obj) => fs.setDoc(ref, obj)
+          .then(() => window.Ledger.status("Synced"))
+          .catch((e) => window.Ledger.status("Not synced (" + e.code + ")", true)),
+        signOut: () => auth.signOut(a)
+      });
+    });
+  } catch (e) {
+    window.Ledger.failed("Cloud sync unavailable: " + (e && e.message ? e.message : e));
+  }
+}
 </script>
 </body>
 </html>
