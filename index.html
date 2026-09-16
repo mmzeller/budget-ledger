@@ -280,7 +280,7 @@ window.FIREBASE_CONFIG = {
 (function () {
 "use strict";
 
-var BUILD = "2026-09-15q";
+var BUILD = "2026-09-15s";
 var LS = "paycheck-ledger-v2";
 var HORIZON = 13;
 var PER_CHECK = 12 / 26;
@@ -303,6 +303,8 @@ function fmtDate(d){ return new Date(d).toLocaleDateString("en-US",{weekday:"sho
 function fmtShort(d){ return new Date(d).toLocaleDateString("en-US",{month:"short",day:"numeric"}); }
 function monthYear(o){ var n=new Date(); return new Date(n.getFullYear(),n.getMonth()+o,1).toLocaleDateString("en-US",{month:"long",year:"numeric"}); }
 function monthShort(o){ var n=new Date(); return new Date(n.getFullYear(),n.getMonth()+o,1).toLocaleDateString("en-US",{month:"short",year:"numeric"}); }
+var MONTHS=["January","February","March","April","May","June",
+  "July","August","September","October","November","December"];
 function el(t,c,x){ var e=document.createElement(t); if(c) e.className=c; if(x!=null) e.textContent=x; return e; }
 function cssVar(n){ return getComputedStyle(document.documentElement).getPropertyValue(n).trim(); }
 
@@ -314,7 +316,7 @@ function seed(){
     checking:0, savings:0,
     incomes:[{id:uid(),name:"Main paycheck",payType:"fixed",baseline:0,low:0,
               dayRate:0,typicalDays:10,lowDays:5,cadence:"biweekly",firstPayDate:toISO(d)}],
-    overrides:{}, days:{}, paid:{},
+    overrides:{}, days:{}, paid:{}, aside:{},
     bills:[
       {id:uid(),name:"Rent / mortgage",amount:0,dueDay:1,category:"Home"},
       {id:uid(),name:"Electric",amount:0,dueDay:15,category:"Utilities"},
@@ -348,6 +350,7 @@ function normalize(raw){
     overrides:(raw.overrides&&typeof raw.overrides==="object")?raw.overrides:{},
     days:(raw.days&&typeof raw.days==="object")?raw.days:{},
     paid:(raw.paid&&typeof raw.paid==="object")?raw.paid:{},
+    aside:(raw.aside&&typeof raw.aside==="object")?raw.aside:{},
     bills:Array.isArray(raw.bills)?raw.bills:s.bills,
     debts:Array.isArray(raw.debts)?raw.debts:s.debts,
     life:Array.isArray(raw.life)?raw.life:s.life,
@@ -355,7 +358,12 @@ function normalize(raw){
     strategy:(raw.strategy==="snowball"||raw.strategy==="manual")?raw.strategy:"avalanche"
   };
   [o.incomes,o.bills,o.debts,o.life].forEach(function(arr){ arr.forEach(function(x){ if(!x.id) x.id=uid(); }); });
-  o.bills.forEach(function(b){ if(!b.category) b.category="Other"; });
+  o.bills.forEach(function(b){
+    if(!b.category) b.category="Other";
+    b.every=[1,3,6,12].indexOf(num(b.every))>=0?num(b.every):1;
+    b.anchorMonth=Math.min(11,Math.max(0,Math.round(num(b.anchorMonth))||0));
+    b.spread = b.spread===undefined ? (b.every>1) : !!b.spread;
+  });
   o.catList = Array.isArray(raw.catList)
     ? raw.catList.filter(function(c){ return typeof c==="string" && c.trim(); })
     : [];
@@ -409,14 +417,46 @@ function incomeEvents(inc,start,end){
 }
 function billOccurrences(b,start,end){
   var out=[], cur=new Date(start.getFullYear(),start.getMonth(),1);
+  var every=Math.max(1,num(b.every)||1);
+  var anchor=Math.min(11,Math.max(0,num(b.anchorMonth)||0));
   while(cur<end){
     var y=cur.getFullYear(), m=cur.getMonth();
-    var dd=Math.min(Math.max(1,num(b.dueDay)||1),dim(y,m));
-    var x=sod(new Date(y,m,dd));
-    if(x>=start&&x<end) out.push(x);
+    /* 3, 6 and 12 all divide 12, so this stays consistent across years */
+    if(((m-anchor)%every+every)%every===0){
+      var dd=Math.min(Math.max(1,num(b.dueDay)||1),dim(y,m));
+      var x=sod(new Date(y,m,dd));
+      if(x>=start&&x<end) out.push(x);
+    }
     cur=new Date(y,m+1,1);
   }
   return out;
+}
+/* what a bill costs per month once its interval is taken into account */
+function monthlyEquiv(b){ return num(b.amount)/Math.max(1,num(b.every)||1); }
+/* a sinking pot's balance: every set-aside ticked, less every payment made */
+function potBalance(billId){
+  var inSum=0, outSum=0, k;
+  for(k in state.aside) if(k.indexOf(billId+"_")===0) inSum+=num(state.aside[k]);
+  for(k in state.paid)  if(k.indexOf(billId+"_")===0) outSum+=num(state.paid[k]);
+  return inSum-outSum;
+}
+/* how many of your paychecks land between now and a date */
+function checksUntil(date){
+  var ds=primaryPayDates(state.incomes[0],40,true), today=sod(new Date()), n=0;
+  for(var i=0;i<ds.length;i++) if(ds[i]>=today && ds[i]<=date) n++;
+  return n;
+}
+/* the next few non-monthly bills, so a big one is never a surprise */
+function bigBillsAhead(n){
+  var today=sod(new Date()), out=[];
+  state.bills.forEach(function(b){
+    if((num(b.every)||1)<=1) return;
+    billOccurrences(b,today,addDays(today,400)).forEach(function(d){
+      out.push({id:b.id,name:b.name,date:d,amount:num(b.amount),spread:b.spread!==false,every:num(b.every)});
+    });
+  });
+  out.sort(function(a,b){ return a.date-b.date; });
+  return out.slice(0,n||4);
 }
 function perCheckRates(){
   var debtMin=state.debts.reduce(function(s,d){return s+num(d.minimum);},0);
@@ -435,8 +475,15 @@ function makePeriod(start,end,index,rates){
       sources.push({incomeId:inc.id,date:d,amount:amt,key:k,daily:inc.payType==="daily",days:daysFor(inc,k)});
     });
   });
-  var hits=[];
+  var hits=[], aside=0, asideItems=[];
   state.bills.forEach(function(b){
+    if(b.spread && (num(b.every)||1)>1){
+      var per=monthlyEquiv(b)*PER_CHECK, ak=b.id+"_"+toISO(start);
+      aside+=per;
+      asideItems.push({id:b.id,key:ak,name:b.name,planned:per,
+                       set:state.aside[ak]!==undefined,actual:num(state.aside[ak])});
+      return;
+    }
     billOccurrences(b,start,end).forEach(function(d){
       var key=b.id+"_"+toISO(d);
       hits.push({id:b.id,key:key,name:b.name,date:d,amount:num(b.amount),
@@ -448,9 +495,9 @@ function makePeriod(start,end,index,rates){
   var settled=hits.filter(function(b){return b.paid;});
   var paidTotal=settled.reduce(function(s,b){return s+b.actual;},0);
   var paidPlanned=settled.reduce(function(s,b){return s+b.amount;},0);
-  var committed=billTotal+rates.debt+rates.spend+rates.save;
+  var committed=billTotal+aside+rates.debt+rates.spend+rates.save;
   return {index:index,start:start,end:end,sources:sources,income:income,bills:hits,
-    billTotal:billTotal,paidTotal:paidTotal,paidPlanned:paidPlanned,
+    billTotal:billTotal,aside:aside,asideItems:asideItems,paidTotal:paidTotal,paidPlanned:paidPlanned,
     paidCount:settled.length,variance:paidTotal-paidPlanned,
     outstanding:billTotal-paidPlanned,
     debt:rates.debt,spend:rates.spend,save:rates.save,free:income-committed,
@@ -513,7 +560,7 @@ function upcomingDates(inc,n){
   return incomeEvents(inc,today,addDays(today,430)).slice(0,n||4);
 }
 function totals(){
-  var bills=state.bills.reduce(function(s,b){return s+num(b.amount);},0);
+  var bills=state.bills.reduce(function(s,b){return s+monthlyEquiv(b);},0);
   var debtMin=state.debts.reduce(function(s,d){return s+num(d.minimum);},0);
   var debtBal=state.debts.reduce(function(s,d){return s+num(d.balance);},0);
   var spend=state.life.filter(function(l){return l.kind!=="save";}).reduce(function(s,l){return s+num(l.monthly);},0);
@@ -920,8 +967,9 @@ function renderPlan(m){
   for(var q=0;q<periods.length;q++){ if(periods[q].start>=today0 && !periods[q].partial){ nextIdx=q; break; } }
   var next=periods[nextIdx];
   var detail=el("section","card"); detail.appendChild(el("h2",null,"What this check pays"));
-  var billBody=el("div"), tally=el("div","tally"), restBody=el("div");
-  detail.appendChild(billBody); detail.appendChild(tally); detail.appendChild(restBody);
+  var billBody=el("div"), tally=el("div","tally"), asideBody=el("div"), restBody=el("div");
+  detail.appendChild(billBody); detail.appendChild(tally);
+  detail.appendChild(asideBody); detail.appendChild(restBody);
   m.appendChild(detail);
 
   /* bill rows are built once — they hold inputs, so refresh must not rebuild them */
@@ -1027,6 +1075,36 @@ function renderPlan(m){
     tl.appendChild(wrap);
   });
 
+  var ahead=bigBillsAhead(5);
+  if(ahead.length){
+    var ac=el("section","card");
+    ac.appendChild(el("h2",null,"Big bills on the horizon"));
+    ac.appendChild(el("p","muted","The ones that don't come every month. Tick the set-aside on the check above each payday and the bar fills; when the bill lands, ticking it paid spends the pot back down."));
+    var seen={};
+    ahead.forEach(function(x){
+      ac.appendChild(lineRow(x.name,
+        fmtShort(x.date)+(x.spread?"":" \u00b7 from one check"),
+        money(x.amount), x.spread?null:cssVar("--life")));
+      if(!x.spread || seen[x.id]) return;
+      seen[x.id]=true;
+      var have=potBalance(x.id), need=Math.max(0,x.amount-have);
+      var checks=checksUntil(x.date);
+      var bar=el("div","prog"), fill=el("div","prog-fill");
+      fill.style.width=Math.min(100,x.amount>0?(have/x.amount)*100:0)+"%";
+      bar.appendChild(fill); ac.appendChild(bar);
+      var note=el("div","pot-note");
+      if(need<=0.005) note.textContent=money0(have)+" set aside \u2014 fully covered.";
+      else if(checks>0){
+        var per=need/checks, planned=monthlyEquiv({amount:x.amount,every:x.every})*PER_CHECK;
+        note.textContent=money0(have)+" of "+money0(x.amount)+" set aside \u00b7 "
+          +checks+(checks===1?" check":" checks")+" to go \u00b7 "+money0(per)+" each from here";
+        note.style.color = per>planned*1.05 ? cssVar("--short") : cssVar("--free");
+      } else note.textContent=money0(have)+" of "+money0(x.amount)+" set aside \u00b7 due now";
+      ac.appendChild(note);
+    });
+    m.appendChild(ac);
+  }
+
   var hist=buildHistory(4).filter(function(h){ return h.bills.length; });
   if(hist.length){
     var hc=el("section","card");
@@ -1048,6 +1126,31 @@ function renderPlan(m){
       hc.appendChild(r);
     });
     m.appendChild(hc);
+  }
+
+  var asideCells=[];
+  if(next.asideItems.length){
+    asideBody.appendChild(el("h3",null,"Set aside this check"));
+    next.asideItems.forEach(function(a){
+      var line=el("div","bline");
+      var box=el("button","paidbox","\u2713");
+      box.setAttribute("aria-label","Mark "+a.name+" set aside");
+      line.appendChild(box);
+      line.appendChild(el("span","bline-name",a.name));
+      var when=el("span","bline-when"); line.appendChild(when);
+      var plan=el("span","bline-amt"); line.appendChild(plan);
+      var mi=moneyInput(
+        function(){ return state.aside[a.key]!==undefined?num(state.aside[a.key]):a.planned; },
+        function(v){ state.aside[a.key]=v; },92);
+      line.appendChild(mi);
+      box.addEventListener("click",safe(function(){
+        if(state.aside[a.key]!==undefined) delete state.aside[a.key];
+        else state.aside[a.key]=Math.round(a.planned*100)/100;
+        refresh(); touched();
+      }));
+      asideBody.appendChild(line);
+      asideCells.push({item:a,line:line,box:box,when:when,plan:plan,mi:mi});
+    });
   }
 
   var stand=el("section","card");
@@ -1098,6 +1201,15 @@ function renderPlan(m){
         tally.appendChild(v);
       }
     }
+    asideCells.forEach(function(c){
+      var isSet=state.aside[c.item.key]!==undefined;
+      c.box.classList[isSet?"add":"remove"]("on");
+      c.line.classList[isSet?"add":"remove"]("done");
+      c.when.textContent=isSet?"moved":"to move";
+      c.plan.style.display=isSet?"none":"";
+      c.mi.style.display=isSet?"":"none";
+      c.plan.textContent=money(c.item.planned);
+    });
     restBody.innerHTML="";
     restBody.appendChild(lineRow("Debt payments","spread evenly",money(n.debt)));
     restBody.appendChild(lineRow("Spending money","groceries, gas, fun",money(n.spend)));
@@ -1259,7 +1371,7 @@ function addCategory(){
 function renderBills(m){
   var card=el("section","card");
   card.appendChild(el("h2",null,"Bills that show up every month"));
-  card.appendChild(el("p","muted","Same amount, same date, no decision to make. Anything that hits once a year — registration, insurance in full, holidays — belongs on the Life tab as something you save toward instead."));
+  card.appendChild(el("p","muted","Anything with a due date, however often it comes round. Set a bill to twice a year or yearly and it can put a slice aside from every check, so a big one never lands on a single paycheck. Totals below are per month, with the interval already divided out."));
   /* categories are an explicit ordered list, so an empty one can exist */
   var order=state.catList.slice(), groups={};
   order.forEach(function(c){ groups[c]=[]; });
@@ -1322,11 +1434,46 @@ function renderBills(m){
       });
       cat.value=b.category||"Other";
       cat.addEventListener("change",safe(function(){ b.category=cat.value; touched(); reRender(); }));
+      var freq=document.createElement("select"); freq.className="sel";
+      freq.style.width="150px"; freq.style.flex="none";
+      [[1,"Every month"],[3,"Every 3 months"],[6,"Twice a year"],[12,"Once a year"]].forEach(function(o){
+        var op=document.createElement("option"); op.value=o[0]; op.textContent=o[1]; freq.appendChild(op);
+      });
+      freq.value=String(num(b.every)||1);
+      freq.addEventListener("change",safe(function(){
+        b.every=num(freq.value)||1;
+        if(b.every>1 && b.spread===undefined) b.spread=true;
+        touched(); reRender();
+      }));
+
+      var fields=[{label:"Amount",control:moneyInput(function(){return num(b.amount);},function(v){b.amount=v;},120)},
+                  {label:"Day of month",control:day},
+                  {label:"How often",control:freq}];
+
+      if((num(b.every)||1)>1){
+        var mon=document.createElement("select"); mon.className="sel";
+        mon.style.width="150px"; mon.style.flex="none";
+        MONTHS.forEach(function(nm,ix){
+          var op=document.createElement("option"); op.value=ix; op.textContent=nm; mon.appendChild(op);
+        });
+        mon.value=String(num(b.anchorMonth)||0);
+        mon.addEventListener("change",safe(function(){ b.anchorMonth=num(mon.value)||0; refresh(); touched(); reRender(); }));
+        fields.push({label:"First due in",control:mon});
+
+        var sp=document.createElement("select"); sp.className="sel";
+        sp.style.width="182px"; sp.style.flex="none";
+        [["yes","Set aside each check"],["no","Pay from one check"]].forEach(function(o){
+          var op=document.createElement("option"); op.value=o[0]; op.textContent=o[1]; sp.appendChild(op);
+        });
+        sp.value = b.spread===false ? "no" : "yes";
+        sp.addEventListener("change",safe(function(){ b.spread=(sp.value==="yes"); touched(); reRender(); }));
+        fields.push({label:"How you'll cover it",control:sp});
+      }
+      fields.push({label:"Category",control:cat});
+
       body.appendChild(stackRow(
         textInput(function(){return b.name;},function(v){b.name=v;}),
-        [{label:"Amount",control:moneyInput(function(){return num(b.amount);},function(v){b.amount=v;},120)},
-         {label:"Day of month",control:day},
-         {label:"Category",control:cat}],
+        fields,
         function(){ state.bills=state.bills.filter(function(x){return x.id!==b.id;}); touched(); render(); },
         {canUp:bi>0, canDown:bi<items.length-1,
          up:moveHandler("bills",b.id,-1,sameCat), down:moveHandler("bills",b.id,1,sameCat)}));
@@ -1344,7 +1491,7 @@ function renderBills(m){
   refresh=function(){
     headCells.forEach(function(h){
       var items=state.bills.filter(function(b){ return (b.category||"Other")===h.cname; });
-      var sum=items.reduce(function(a,b){ return a+num(b.amount); },0);
+      var sum=items.reduce(function(a,b){ return a+monthlyEquiv(b); },0);
       h.el.innerHTML="";
       var big=document.createElement("b"); big.textContent=money0(sum); h.el.appendChild(big);
       h.el.appendChild(document.createTextNode(
