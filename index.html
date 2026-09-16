@@ -133,6 +133,25 @@ select.sel, input.date { flex:1; font-size:15px; }
 .tl-multi { font-size:14px; font-weight:600; padding:8px 0; }
 .tl-out { width:76px; text-align:right; font-size:14px; font-weight:600; flex:none; }
 
+.bline { display:flex; align-items:center; gap:9px; padding:8px 0;
+  border-bottom:1px solid var(--rule); font-size:14px; }
+.bline-name { flex:1; min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+.bline.done .bline-name { color:var(--ink-faint); }
+.bline-when { font-size:11px; color:var(--ink-faint); white-space:nowrap; }
+.bline-amt { font-weight:600; min-width:76px; text-align:right; }
+.paidbox { width:24px; height:24px; flex:none; padding:0; cursor:pointer;
+  border:1.5px solid var(--rule); border-radius:5px; background:var(--well);
+  font:inherit; font-size:14px; line-height:1; color:transparent; }
+.paidbox.on { background:var(--free); border-color:var(--free); color:#fff; }
+.tally { display:flex; gap:8px; align-items:baseline; padding:9px 0 2px; font-size:12px; color:var(--ink-soft); }
+.tally-var { margin-left:auto; font-weight:600; }
+.hrow { display:flex; align-items:baseline; gap:8px; padding:7px 0;
+  border-bottom:1px solid var(--rule); font-size:13px; }
+.hrow:last-child { border-bottom:none; }
+.hrow-date { width:62px; color:var(--ink-soft); flex:none; }
+.hrow-nums { flex:1; color:var(--ink-faint); font-size:12px; }
+.hrow-var { font-weight:600; white-space:nowrap; }
+
 .srow { padding:11px 0; border-bottom:1px solid var(--rule); }
 .srow:last-of-type { border-bottom:none; }
 .srow-top { display:flex; align-items:center; gap:4px; }
@@ -224,7 +243,7 @@ window.FIREBASE_CONFIG = {
 (function () {
 "use strict";
 
-var BUILD = "2026-09-15j";
+var BUILD = "2026-09-15k";
 var LS = "paycheck-ledger-v2";
 var HORIZON = 13;
 var PER_CHECK = 12 / 26;
@@ -255,7 +274,7 @@ function seed(){
     checking:0, savings:0,
     incomes:[{id:uid(),name:"Main paycheck",payType:"fixed",baseline:0,low:0,
               dayRate:0,typicalDays:10,lowDays:5,cadence:"biweekly",firstPayDate:toISO(d)}],
-    overrides:{}, days:{},
+    overrides:{}, days:{}, paid:{},
     bills:[
       {id:uid(),name:"Rent / mortgage",amount:0,dueDay:1},
       {id:uid(),name:"Electric",amount:0,dueDay:15},
@@ -287,6 +306,7 @@ function normalize(raw){
     incomes:(Array.isArray(raw.incomes)&&raw.incomes.length)?raw.incomes:s.incomes,
     overrides:(raw.overrides&&typeof raw.overrides==="object")?raw.overrides:{},
     days:(raw.days&&typeof raw.days==="object")?raw.days:{},
+    paid:(raw.paid&&typeof raw.paid==="object")?raw.paid:{},
     bills:Array.isArray(raw.bills)?raw.bills:s.bills,
     debts:Array.isArray(raw.debts)?raw.debts:s.debts,
     life:Array.isArray(raw.life)?raw.life:s.life,
@@ -346,41 +366,65 @@ function billOccurrences(b,start,end){
   }
   return out;
 }
+function perCheckRates(){
+  var debtMin=state.debts.reduce(function(s,d){return s+num(d.minimum);},0);
+  var spendM=state.life.filter(function(l){return l.kind!=="save";}).reduce(function(s,l){return s+num(l.monthly);},0);
+  var saveM=state.life.filter(function(l){return l.kind==="save";}).reduce(function(s,l){return s+num(l.monthly);},0);
+  return {debt:(debtMin+num(state.extraDebtMonthly))*PER_CHECK,
+          spend:spendM*PER_CHECK, save:saveM*PER_CHECK};
+}
+function makePeriod(start,end,index,rates){
+  var income=0, sources=[];
+  state.incomes.forEach(function(inc){
+    incomeEvents(inc,start,end).forEach(function(d){
+      var k=inc.id+"_"+toISO(d);
+      var amt=amountFor(inc,k);
+      income+=amt;
+      sources.push({incomeId:inc.id,date:d,amount:amt,key:k,daily:inc.payType==="daily",days:daysFor(inc,k)});
+    });
+  });
+  var hits=[];
+  state.bills.forEach(function(b){
+    billOccurrences(b,start,end).forEach(function(d){
+      var key=b.id+"_"+toISO(d);
+      hits.push({id:b.id,key:key,name:b.name,date:d,amount:num(b.amount),
+                 paid:state.paid[key]!==undefined,actual:num(state.paid[key])});
+    });
+  });
+  hits.sort(function(a,b){return a.date-b.date;});
+  var billTotal=hits.reduce(function(s,b){return s+b.amount;},0);
+  var settled=hits.filter(function(b){return b.paid;});
+  var paidTotal=settled.reduce(function(s,b){return s+b.actual;},0);
+  var paidPlanned=settled.reduce(function(s,b){return s+b.amount;},0);
+  var committed=billTotal+rates.debt+rates.spend+rates.save;
+  return {index:index,start:start,end:end,sources:sources,income:income,bills:hits,
+    billTotal:billTotal,paidTotal:paidTotal,paidPlanned:paidPlanned,
+    paidCount:settled.length,variance:paidTotal-paidPlanned,
+    outstanding:billTotal-paidPlanned,
+    debt:rates.debt,spend:rates.spend,save:rates.save,free:income-committed,
+    monthKey:start.getFullYear()+"-"+start.getMonth()};
+}
 function buildPeriods(){
   var dates=primaryPayDates(state.incomes[0],HORIZON+1);
   if(dates.length<2) return [];
-  var debtMin=state.debts.reduce(function(s,d){return s+num(d.minimum);},0);
-  var extra=num(state.extraDebtMonthly);
-  var spendM=state.life.filter(function(l){return l.kind!=="save";}).reduce(function(s,l){return s+num(l.monthly);},0);
-  var saveM=state.life.filter(function(l){return l.kind==="save";}).reduce(function(s,l){return s+num(l.monthly);},0);
-  var debtPer=(debtMin+extra)*PER_CHECK, spendPer=spendM*PER_CHECK, savePer=saveM*PER_CHECK;
-  var periods=[];
-  for(var i=0;i<Math.min(HORIZON,dates.length-1);i++){
-    var start=dates[i], end=dates[i+1], income=0, sources=[];
-    state.incomes.forEach(function(inc){
-      incomeEvents(inc,start,end).forEach(function(d){
-        var k=inc.id+"_"+toISO(d);
-        var amt=amountFor(inc,k);
-        income+=amt;
-        sources.push({incomeId:inc.id,date:d,amount:amt,key:k,daily:inc.payType==="daily",
-                      days:daysFor(inc,k)});
-      });
-    });
-    var hits=[];
-    state.bills.forEach(function(b){
-      billOccurrences(b,start,end).forEach(function(d){ hits.push({name:b.name,date:d,amount:num(b.amount)}); });
-    });
-    hits.sort(function(a,b){return a.date-b.date;});
-    var billTotal=hits.reduce(function(s,b){return s+b.amount;},0);
-    var committed=billTotal+debtPer+spendPer+savePer;
-    periods.push({index:i,start:start,end:end,sources:sources,income:income,bills:hits,billTotal:billTotal,
-      debt:debtPer,spend:spendPer,save:savePer,free:income-committed,
-      monthKey:start.getFullYear()+"-"+start.getMonth()});
-  }
+  var rates=perCheckRates(), periods=[];
+  for(var i=0;i<Math.min(HORIZON,dates.length-1);i++)
+    periods.push(makePeriod(dates[i],dates[i+1],i,rates));
   var counts={};
   periods.forEach(function(p){ counts[p.monthKey]=(counts[p.monthKey]||0)+1; });
   periods.forEach(function(p){ p.thirdCheck=counts[p.monthKey]>=3; });
   return periods;
+}
+/* pay periods that have already closed, newest first */
+function buildHistory(back){
+  var first=primaryPayDates(state.incomes[0],1)[0];
+  if(!first) return [];
+  var rates=perCheckRates(), out=[];
+  for(var i=1;i<=(back||4);i++){
+    var start=addDays(first,-14*i), end=addDays(first,-14*(i-1));
+    out.push(makePeriod(start,end,-i,rates));
+  }
+  return out;
 }
 function daysFor(inc,k){
   return state.days[k]!==undefined ? num(state.days[k]) : num(inc.typicalDays);
@@ -587,8 +631,13 @@ function buildWorkbook(X){
   });
   sheet(incRows,"Income detail");
 
-  var detail=[["Pay date","Bill","Due","Amount"]];
-  periods.forEach(function(p){ p.bills.forEach(function(b){ detail.push([toISO(p.start),b.name,toISO(b.date),b.amount]); }); });
+  var detail=[["Pay date","Bill","Due","Planned","Paid","Variance"]];
+  buildHistory(6).reverse().concat(periods).forEach(function(p){
+    p.bills.forEach(function(b){
+      detail.push([toISO(p.start),b.name,toISO(b.date),b.amount,
+                   b.paid?b.actual:"", b.paid?(b.actual-b.amount):""]);
+    });
+  });
   sheet(detail,"Bills by check");
   return wb;
 }
@@ -763,8 +812,35 @@ function renderPlan(m){
   [when,amt,note,bar,legend,alarmSlot].forEach(function(x){ hero.appendChild(x); });
   m.appendChild(hero);
 
+  var next=periods[0];
   var detail=el("section","card"); detail.appendChild(el("h2",null,"What this check pays"));
-  var detailBody=el("div"); detail.appendChild(detailBody); m.appendChild(detail);
+  var billBody=el("div"), tally=el("div","tally"), restBody=el("div");
+  detail.appendChild(billBody); detail.appendChild(tally); detail.appendChild(restBody);
+  m.appendChild(detail);
+
+  /* bill rows are built once — they hold inputs, so refresh must not rebuild them */
+  var billCells=[];
+  if(!next.bills.length) billBody.appendChild(el("p","muted","No bills fall in this stretch."));
+  next.bills.forEach(function(b){
+    var line=el("div","bline");
+    var box=el("button","paidbox","\u2713");
+    box.setAttribute("aria-label","Mark "+b.name+" paid");
+    line.appendChild(box);
+    line.appendChild(el("span","bline-name",b.name));
+    var when=el("span","bline-when"); line.appendChild(when);
+    var plan=el("span","bline-amt"); line.appendChild(plan);
+    var mi=moneyInput(
+      function(){ return state.paid[b.key]!==undefined?num(state.paid[b.key]):b.amount; },
+      function(v){ state.paid[b.key]=v; },92);
+    line.appendChild(mi);
+    box.addEventListener("click",safe(function(){
+      if(state.paid[b.key]!==undefined) delete state.paid[b.key];
+      else state.paid[b.key]=b.amount;
+      refresh(); touched();
+    }));
+    billBody.appendChild(line);
+    billCells.push({hit:b,line:line,box:box,when:when,plan:plan,mi:mi});
+  });
 
   var tlCard=el("section","card");
   tlCard.appendChild(el("h2",null,"The next six months"));
@@ -835,6 +911,29 @@ function renderPlan(m){
     tl.appendChild(wrap);
   });
 
+  var hist=buildHistory(4).filter(function(h){ return h.bills.length; });
+  if(hist.length){
+    var hc=el("section","card");
+    hc.appendChild(el("h2",null,"How the last few checks went"));
+    hc.appendChild(el("p","muted","Planned against what you actually paid. Blank means nothing was ticked off that stretch."));
+    hist.forEach(function(h){
+      var r=el("div","hrow");
+      r.appendChild(el("span","hrow-date",fmtShort(h.start)));
+      r.appendChild(el("span","hrow-nums",
+        h.paidCount? money0(h.paidTotal)+" paid of "+money0(h.billTotal)+" planned"
+                   : money0(h.billTotal)+" planned \u00b7 nothing recorded"));
+      var v=el("span","hrow-var");
+      if(h.paidCount && Math.abs(h.variance)>=0.005){
+        v.textContent=(h.variance>0?"+":"\u2212")+money0(Math.abs(h.variance));
+        v.style.color=h.variance>0?C.short:C.free;
+      } else if(h.paidCount){ v.textContent="on plan"; v.style.color=C.free; }
+      else { v.textContent="\u2014"; v.style.color=cssVar("--ink-faint"); }
+      r.appendChild(v);
+      hc.appendChild(r);
+    });
+    m.appendChild(hc);
+  }
+
   var stand=el("section","card");
   stand.appendChild(el("h2",null,"Where you stand today"));
   stand.appendChild(row([el("label",null,"Checking"),moneyInput(function(){return num(state.checking);},function(v){state.checking=v;})]));
@@ -861,13 +960,32 @@ function renderPlan(m){
     });
     alarmSlot.innerHTML="";
     if(n.free<0) alarmSlot.appendChild(el("div","alarm","This check runs "+money(-n.free)+" short. Trim a life category, move a bill, or lower the extra debt payment until it clears."));
-    detailBody.innerHTML="";
-    if(!n.bills.length) detailBody.appendChild(el("p","muted","No bills fall in this stretch."));
-    n.bills.forEach(function(b){ detailBody.appendChild(lineRow(b.name,fmtShort(b.date),money(b.amount))); });
-    detailBody.appendChild(lineRow("Debt payments","spread evenly",money(n.debt)));
-    detailBody.appendChild(lineRow("Spending money","groceries, gas, fun",money(n.spend)));
-    detailBody.appendChild(lineRow("Into savings pots","your savings goals",money(n.save)));
-    detailBody.appendChild(lineRow(n.free>=0?"Unassigned":"Short","",money(n.free),n.free>=0?C.free:C.short,true));
+    billCells.forEach(function(c){
+      var isPaid=state.paid[c.hit.key]!==undefined;
+      if(isPaid) c.box.classList.add("on"); else c.box.classList.remove("on");
+      if(isPaid) c.line.classList.add("done"); else c.line.classList.remove("done");
+      c.when.textContent=isPaid?"paid":fmtShort(c.hit.date);
+      c.plan.style.display=isPaid?"none":"";
+      c.mi.style.display=isPaid?"":"none";
+      c.plan.textContent=money(c.hit.amount);
+    });
+    tally.innerHTML="";
+    if(n.bills.length){
+      tally.appendChild(el("span",null,
+        money0(n.paidTotal)+" of "+money0(n.billTotal)+" settled"
+        +(n.outstanding>0.005?" \u00b7 "+money0(n.outstanding)+" to go":"")));
+      if(n.paidCount && Math.abs(n.variance)>=0.005){
+        var v=el("span","tally-var",
+          (n.variance>0?"+":"\u2212")+money0(Math.abs(n.variance))+" vs plan");
+        v.style.color=n.variance>0?C.short:C.free;
+        tally.appendChild(v);
+      }
+    }
+    restBody.innerHTML="";
+    restBody.appendChild(lineRow("Debt payments","spread evenly",money(n.debt)));
+    restBody.appendChild(lineRow("Spending money","groceries, gas, fun",money(n.spend)));
+    restBody.appendChild(lineRow("Into savings pots","your savings goals",money(n.save)));
+    restBody.appendChild(lineRow(n.free>=0?"Unassigned":"Short","",money(n.free),n.free>=0?C.free:C.short,true));
     ps.forEach(function(p,i){
       if(!outCells[i]) return;
       outCells[i].textContent=(p.free>=0?"+":"")+money0(p.free);
