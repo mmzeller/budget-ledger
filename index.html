@@ -127,11 +127,13 @@ select.sel, input.date { flex:1; font-size:15px; }
 
 .tl-row { display:flex; align-items:center; gap:10px; padding:3px 0; border-bottom:1px solid var(--rule); }
 .tl-row:last-child { border-bottom:none; }
-.tl-date { width:78px; font-size:13px; color:var(--ink-soft); flex:none; display:flex; align-items:center; gap:5px; }
+.tl-date { width:86px; font-size:13px; color:var(--ink-soft); flex:none; display:flex; align-items:center; gap:5px; }
 .pip { width:5px; height:5px; border-radius:50%; background:var(--life); flex:none; }
 .tl-in { flex:1; display:flex; }
 .tl-multi { font-size:14px; font-weight:600; padding:8px 0; }
-.tl-out { width:76px; text-align:right; font-size:14px; font-weight:600; flex:none; }
+.tl-out { width:72px; text-align:right; font-size:14px; font-weight:600; flex:none; }
+.tl-in { min-width:0; }
+.tl-in .mi { width:96px; }
 
 .bline { display:flex; align-items:center; gap:9px; padding:8px 0;
   border-bottom:1px solid var(--rule); font-size:14px; }
@@ -173,14 +175,17 @@ select.sel, input.date { flex:1; font-size:15px; }
 .chev { font-size:17px; color:var(--ink-faint); margin-left:auto; padding:0 2px 0 8px;
   display:inline-block; transition:transform .15s ease; }
 .chev.open { transform:rotate(90deg); }
-.tl-detail { display:none; padding:0 0 10px 78px; }
+.tl-detail { display:none; padding:0 0 12px; }
 .tl-detail.open { display:block; }
-.tl-src { display:flex; align-items:center; gap:6px; padding:3px 0; }
-.tl-srcdate { font-size:11px; color:var(--ink-faint); width:48px; flex:none; text-align:right; }
-.tl-cover { font-size:11px; color:var(--ink-faint); padding:1px 0 7px; }
-.nowtag { font-size:10px; font-weight:600; color:var(--life); letter-spacing:.03em; }
-.tl-srcname { flex:1; min-width:0; font-size:13px; color:var(--ink-soft);
-  overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+.tl-src { padding:8px 0 4px; }
+.tl-src + .tl-src { border-top:1px solid var(--rule); }
+.tl-srcline { display:flex; align-items:center; gap:9px; flex-wrap:wrap; }
+.tl-srcdate { font-size:12px; color:var(--ink-faint); flex:none; }
+.tl-cover { font-size:11px; color:var(--ink-faint); padding:2px 0 6px;
+  border-bottom:1px solid var(--rule); }
+.nowtag { font-size:9px; font-weight:700; color:var(--life); letter-spacing:.04em; }
+.tl-srcname { display:block; font-size:13px; font-weight:600; color:var(--ink);
+  margin-bottom:6px; overflow-wrap:anywhere; }
 .daybox { display:flex; align-items:center; gap:6px; }
 .dayunit { font-size:12px; color:var(--ink-faint); }
 .tl-amt { font-size:13px; font-weight:600; min-width:62px; text-align:right; }
@@ -250,7 +255,7 @@ window.FIREBASE_CONFIG = {
 (function () {
 "use strict";
 
-var BUILD = "2026-09-15n";
+var BUILD = "2026-09-15o";
 var LS = "paycheck-ledger-v2";
 var HORIZON = 13;
 var PER_CHECK = 12 / 26;
@@ -969,9 +974,11 @@ function renderPlan(m){
       p.sources.forEach(function(src){
         var inc=incOf(src.incomeId); if(!inc) return;
         var line=el("div","tl-src");
-        line.appendChild(el("span","tl-srcname",inc.name));
-        line.appendChild(el("span","tl-srcdate",fmtShort(src.date)));
-        sourceControl(src,inc,line);
+        line.appendChild(el("div","tl-srcname",inc.name));
+        var sub2=el("div","tl-srcline");
+        sub2.appendChild(el("span","tl-srcdate",fmtShort(src.date)));
+        sourceControl(src,inc,sub2);
+        line.appendChild(sub2);
         detail.appendChild(line);
       });
       wrap.appendChild(detail);
