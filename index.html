@@ -154,7 +154,11 @@ select.sel, input.date { flex:1; font-size:15px; }
 
 .srow { padding:11px 0; border-bottom:1px solid var(--rule); }
 .srow:last-of-type { border-bottom:none; }
-.srow-top { display:flex; align-items:center; gap:4px; }
+.srow-top { display:flex; align-items:center; gap:2px; }
+.movebtn { font:inherit; font-size:15px; line-height:1; background:none; border:none;
+  color:var(--ink-faint); cursor:pointer; padding:7px 7px; flex:none; border-radius:4px; }
+.movebtn:active { background:var(--track); }
+.movebtn[disabled] { opacity:.22; cursor:default; }
 .srow-top input { flex:1; min-width:0; font-size:16px; font-weight:500; }
 .srow-fields { display:flex; align-items:flex-end; gap:12px; margin-top:9px; flex-wrap:wrap; }
 .sfield { display:flex; flex-direction:column; gap:4px; }
@@ -243,7 +247,7 @@ window.FIREBASE_CONFIG = {
 (function () {
 "use strict";
 
-var BUILD = "2026-09-15k";
+var BUILD = "2026-09-15l";
 var LS = "paycheck-ledger-v2";
 var HORIZON = 13;
 var PER_CHECK = 12 / 26;
@@ -690,11 +694,41 @@ function countInput(get,set,width){
   i.addEventListener("input",safe(function(){ set(num(i.value)); refresh(); touched(); }));
   return i;
 }
+/* swap an item with its neighbour, counting only items of the same kind so the
+   two Life lists reorder independently inside one array */
+function moveItem(listKey,id,dir,peer){
+  var arr=state[listKey], peers=[], here=-1;
+  for(var i=0;i<arr.length;i++) if(!peer||peer(arr[i])) peers.push(i);
+  for(var j=0;j<peers.length;j++) if(arr[peers[j]].id===id) here=j;
+  if(here<0) return false;
+  var there=here+dir;
+  if(there<0||there>=peers.length) return false;
+  var a=peers[here], b=peers[there], tmp=arr[a];
+  arr[a]=arr[b]; arr[b]=tmp;
+  return true;
+}
+function reRender(){
+  var y=window.scrollY||window.pageYOffset||0;
+  render();
+  window.scrollTo(0,y);
+}
+function moveHandler(listKey,id,dir,peer){
+  return function(){ if(moveItem(listKey,id,dir,peer)){ touched(); reRender(); } };
+}
+
 /* name on its own line, numbers labelled underneath — a phone has no room for
    four controls side by side */
-function stackRow(nameEl,fields,onDelete){
+function stackRow(nameEl,fields,onDelete,moves){
   var wrap=el("div","srow"), top=el("div","srow-top");
   top.appendChild(nameEl);
+  if(moves){
+    var up=el("button","movebtn","\u2191"); up.setAttribute("aria-label","Move up");
+    if(!moves.canUp) up.disabled=true; else up.addEventListener("click",safe(moves.up));
+    top.appendChild(up);
+    var dn=el("button","movebtn","\u2193"); dn.setAttribute("aria-label","Move down");
+    if(!moves.canDown) dn.disabled=true; else dn.addEventListener("click",safe(moves.down));
+    top.appendChild(dn);
+  }
   if(onDelete){
     var x=el("button","del","\u00d7"); x.setAttribute("aria-label","Remove");
     x.addEventListener("click",safe(onDelete)); top.appendChild(x);
@@ -1086,14 +1120,16 @@ function renderBills(m){
   var card=el("section","card");
   card.appendChild(el("h2",null,"Bills that show up every month"));
   card.appendChild(el("p","muted","Same amount, same date, no decision to make. Anything that hits once a year — registration, insurance in full, holidays — belongs on the Life tab as something you save toward instead."));
-  state.bills.forEach(function(b){
+  state.bills.forEach(function(b,bi){
     var day=document.createElement("input"); day.className="day"; day.setAttribute("inputmode","numeric"); day.value=b.dueDay;
     day.addEventListener("input",safe(function(){ b.dueDay=Math.min(31,Math.max(1,num(day.value)||1)); refresh(); touched(); }));
     card.appendChild(stackRow(
       textInput(function(){return b.name;},function(v){b.name=v;}),
       [{label:"Amount",control:moneyInput(function(){return num(b.amount);},function(v){b.amount=v;},120)},
        {label:"Day of month",control:day}],
-      function(){ state.bills=state.bills.filter(function(x){return x.id!==b.id;}); touched(); render(); }));
+      function(){ state.bills=state.bills.filter(function(x){return x.id!==b.id;}); touched(); render(); },
+      {canUp:bi>0, canDown:bi<state.bills.length-1,
+       up:moveHandler("bills",b.id,-1), down:moveHandler("bills",b.id,1)}));
   });
   card.appendChild(btn("add","Add a bill",function(){ state.bills.push({id:uid(),name:"New bill",amount:0,dueDay:1}); touched(); render(); }));
   var slot=el("div"); card.appendChild(slot); m.appendChild(card);
@@ -1112,20 +1148,25 @@ function renderLife(m){
   var perCells=[];
   var spendItems=state.life.filter(function(l){return l.kind!=="save";});
   if(!spendItems.length) card.appendChild(el("p","muted","Nothing here yet."));
-  spendItems.forEach(function(l){
+  var isSpend=function(x){ return x.kind!=="save"; };
+  spendItems.forEach(function(l,li){
     var per=el("span","readout"); perCells.push({el:per,item:l});
     card.appendChild(stackRow(
       textInput(function(){return l.name;},function(v){l.name=v;}),
       [{label:"Per month",control:moneyInput(function(){return num(l.monthly);},function(v){l.monthly=v;},120)},
        {label:"Per check",control:per}],
-      function(){ state.life=state.life.filter(function(x){return x.id!==l.id;}); touched(); render(); }));
+      function(){ state.life=state.life.filter(function(x){return x.id!==l.id;}); touched(); render(); },
+      {canUp:li>0, canDown:li<spendItems.length-1,
+       up:moveHandler("life",l.id,-1,isSpend), down:moveHandler("life",l.id,1,isSpend)}));
   });
   card.appendChild(btn("add","Add spending money",function(){
     state.life.push({id:uid(),name:"New category",kind:"spend",monthly:0}); touched(); render(); }));
 
   card.appendChild(el("h3",null,"Saving up for"));
   var pots=[];
-  state.life.filter(function(l){return l.kind==="save";}).forEach(function(l){
+  var isSave=function(x){ return x.kind==="save"; };
+  var potItems=state.life.filter(isSave);
+  potItems.forEach(function(l,pi2){
     var per=el("span","readout");
     var wrap=stackRow(
       textInput(function(){return l.name;},function(v){l.name=v;}),
@@ -1133,7 +1174,9 @@ function renderLife(m){
        {label:"Per check",control:per},
        {label:"Goal",control:moneyInput(function(){return num(l.target);},function(v){l.target=v;},120)},
        {label:"Saved so far",control:moneyInput(function(){return num(l.saved);},function(v){l.saved=v;},120)}],
-      function(){ state.life=state.life.filter(function(x){return x.id!==l.id;}); touched(); render(); });
+      function(){ state.life=state.life.filter(function(x){return x.id!==l.id;}); touched(); render(); },
+      {canUp:pi2>0, canDown:pi2<potItems.length-1,
+       up:moveHandler("life",l.id,-1,isSave), down:moveHandler("life",l.id,1,isSave)});
     var prog=el("div","prog"), fill=el("div","prog-fill"), note=el("div","pot-note");
     prog.appendChild(fill); wrap.appendChild(prog); wrap.appendChild(note);
     card.appendChild(wrap);
@@ -1167,7 +1210,7 @@ function renderLife(m){
 function renderDebt(m){
   var owe=el("section","card");
   owe.appendChild(el("h2",null,"What you owe"));
-  state.debts.forEach(function(d){
+  state.debts.forEach(function(d,di){
     var pct=el("div","pct"), pi=document.createElement("input");
     pi.setAttribute("inputmode","decimal"); pi.value=d.apr;
     pi.addEventListener("input",safe(function(){ d.apr=num(pi.value); refresh(); touched(); }));
@@ -1177,7 +1220,9 @@ function renderDebt(m){
       [{label:"Balance",control:moneyInput(function(){return num(d.balance);},function(v){d.balance=v;},120)},
        {label:"Rate",control:pct},
        {label:"Minimum",control:moneyInput(function(){return num(d.minimum);},function(v){d.minimum=v;},110)}],
-      function(){ state.debts=state.debts.filter(function(x){return x.id!==d.id;}); touched(); render(); }));
+      function(){ state.debts=state.debts.filter(function(x){return x.id!==d.id;}); touched(); render(); },
+      {canUp:di>0, canDown:di<state.debts.length-1,
+       up:moveHandler("debts",d.id,-1), down:moveHandler("debts",d.id,1)}));
   });
   owe.appendChild(btn("add","Add a debt",function(){
     state.debts.push({id:uid(),name:"New debt",balance:0,apr:0,minimum:0}); touched(); render(); }));
