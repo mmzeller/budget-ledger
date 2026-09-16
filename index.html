@@ -20,6 +20,7 @@
   --rule:#D8E0DC; --well:#FAFCFB; --track:#E7ECE9;
   --bills:#3E5750; --debt:#A6432F; --life:#C08A2E; --free:#2E8B6B; --short:#8C1D12;
   --alarm-bg:#FBEFEC; --alarm-ink:#5E1A11;
+  --inc1:#C08A2E; --inc2:#3E6E8E; --inc3:#7D5BA6; --inc4:#4F7A4A;
 }
 @media (prefers-color-scheme: dark) {
   :root:not([data-theme="light"]) {
@@ -28,6 +29,7 @@
     --rule:#263430; --well:#0D1411; --track:#22302B;
     --bills:#7E9A92; --debt:#D9705A; --life:#E0A94A; --free:#4FBF92; --short:#E06A56;
     --alarm-bg:#2A1713; --alarm-ink:#F0C4BA;
+    --inc1:#E0A94A; --inc2:#6FA3C4; --inc3:#B292D6; --inc4:#7FB07A;
   }
 }
 :root[data-theme="dark"] {
@@ -36,6 +38,7 @@
   --rule:#263430; --well:#0D1411; --track:#22302B;
   --bills:#7E9A92; --debt:#D9705A; --life:#E0A94A; --free:#4FBF92; --short:#E06A56;
   --alarm-bg:#2A1713; --alarm-ink:#F0C4BA;
+  --inc1:#E0A94A; --inc2:#6FA3C4; --inc3:#B292D6; --inc4:#7FB07A;
 }
 
 * { box-sizing:border-box; -webkit-tap-highlight-color:transparent; }
@@ -101,10 +104,6 @@ body.hushed input[inputmode="decimal"], body.hushed input[inputmode="numeric"] {
 .line-amt { font-weight:600; white-space:nowrap; }
 .line.total { border-bottom:none; border-top:2px solid var(--ink); margin-top:4px; padding-top:10px; font-weight:600; }
 
-.hdr { display:flex; gap:8px; font-size:11px; color:var(--ink-faint); padding:0 28px 6px 0;
-  border-bottom:1px solid var(--rule); margin-bottom:2px; }
-.hdr span:first-child { flex:1; }
-.hdr .r { width:100px; text-align:right; }
 .row { display:flex; align-items:center; gap:6px; padding:5px 0; }
 .row-body { flex:1; display:flex; align-items:center; gap:6px; min-width:0; }
 .row label { flex:1; font-size:14px; color:var(--ink-soft); }
@@ -122,7 +121,6 @@ select.sel, input.date { flex:1; font-size:15px; }
 .pct { position:relative; display:flex; align-items:center; width:70px; flex:none; }
 .pct input { width:100%; text-align:right; padding-right:20px; }
 .pct-sign { position:absolute; right:8px; font-size:13px; color:var(--ink-faint); }
-.per { width:56px; text-align:right; font-size:12px; color:var(--ink-faint); flex:none; }
 .del { font:inherit; font-size:22px; line-height:1; background:none; border:none; color:var(--ink-faint);
   cursor:pointer; padding:4px 8px; flex:none; }
 .add { font:inherit; font-size:13px; font-weight:500; background:none; border:1px dashed var(--rule);
@@ -134,7 +132,6 @@ select.sel, input.date { flex:1; font-size:15px; }
 .tl-row { display:flex; align-items:center; gap:10px; padding:3px 0; border-bottom:1px solid var(--rule); }
 .tl-row:last-child { border-bottom:none; }
 .tl-date { width:86px; font-size:13px; color:var(--ink-soft); flex:none; display:flex; align-items:center; gap:5px; }
-.pip { width:5px; height:5px; border-radius:50%; background:var(--life); flex:none; }
 .tl-in { flex:1; display:flex; }
 .tl-multi { font-size:14px; font-weight:600; padding:8px 0; }
 .tl-out { width:72px; text-align:right; font-size:14px; font-weight:600; flex:none; }
@@ -193,11 +190,7 @@ select.sel, input.date { flex:1; font-size:15px; }
 .tl-wrap { border-bottom:1px solid var(--rule); }
 .tl-wrap:last-child { border-bottom:none; }
 .tl-row { border-bottom:none; }
-.tl-row.tappable { cursor:pointer; }
-.chev { font-size:17px; color:var(--ink-faint); margin-left:auto; padding:0 2px 0 8px;
-  display:inline-block; transition:transform .15s ease; }
-.chev.open { transform:rotate(90deg); }
-.tl-detail { display:none; padding:0 0 12px; }
+.tl-detail { display:none; padding:0 0 12px 12px; border-left:2px solid var(--rule); margin:0 0 4px 6px; }
 .tl-detail.open { display:block; }
 .tl-src { padding:8px 0 4px; }
 .tl-src + .tl-src { border-top:1px solid var(--rule); }
@@ -205,6 +198,12 @@ select.sel, input.date { flex:1; font-size:15px; }
 .tl-srcdate { font-size:12px; color:var(--ink-faint); flex:none; }
 .tl-cover { font-size:11px; color:var(--ink-faint); padding:2px 0 6px;
   border-bottom:1px solid var(--rule); }
+.swatch { width:9px; height:9px; border-radius:2px; flex:none; display:inline-block;
+  margin-right:6px; vertical-align:-1px; }
+.bonus { width:7px; height:7px; border-radius:50%; flex:none; }
+.bonus-key { display:flex; flex-wrap:wrap; gap:5px 14px; margin-top:10px;
+  font-size:11px; color:var(--ink-faint); }
+.bonus-key span { display:flex; align-items:center; gap:5px; }
 .nowtag { font-size:9px; font-weight:700; color:var(--life); letter-spacing:.04em; }
 .tl-srcname { display:block; font-size:13px; font-weight:600; color:var(--ink);
   margin-bottom:6px; overflow-wrap:anywhere; }
@@ -212,18 +211,10 @@ select.sel, input.date { flex:1; font-size:15px; }
 .dayunit { font-size:12px; color:var(--ink-faint); }
 .tl-amt { font-size:13px; font-weight:600; min-width:62px; text-align:right; }
 
-.pot { padding:8px 0 12px; border-bottom:1px solid var(--rule); }
-.pot:last-of-type { border-bottom:none; }
-.pot-meta { display:flex; align-items:center; gap:6px; padding:2px 0 8px; flex-wrap:wrap; }
-.pot-lab { font-size:11px; color:var(--ink-faint); }
 .prog { height:5px; background:var(--track); border-radius:3px; overflow:hidden; }
 .prog-fill { height:100%; background:var(--life); transition:width .25s ease; }
 .pot-note { font-size:12px; color:var(--ink-soft); margin-top:6px; }
 
-.seg { display:flex; gap:6px; margin:10px 0 12px; }
-.seg-btn { font:inherit; font-size:13px; font-weight:500; flex:1; background:var(--well);
-  border:1px solid var(--rule); border-radius:4px; color:var(--ink-soft); padding:11px 6px; cursor:pointer; }
-.seg-btn.on { background:var(--ink); border-color:var(--ink); color:var(--paper); }
 .result { padding:16px 0 14px; border-top:2px solid var(--ink); border-bottom:1px solid var(--rule); margin-top:8px; }
 .result-big { font-size:44px; font-weight:700; letter-spacing:-.03em; line-height:1; color:var(--debt); }
 .unit { font-size:20px; font-weight:500; margin:0 8px 0 2px; }
@@ -280,9 +271,9 @@ window.FIREBASE_CONFIG = {
 (function () {
 "use strict";
 
-var BUILD = "2026-09-15s";
+var BUILD = "2026-09-15u";
 var LS = "paycheck-ledger-v2";
-var HORIZON = 13;
+var HORIZON_DAYS = 120;
 var PER_CHECK = 12 / 26;
 var XLSX_URL = "https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js";
 
@@ -433,6 +424,29 @@ function billOccurrences(b,start,end){
 }
 /* what a bill costs per month once its interval is taken into account */
 function monthlyEquiv(b){ return num(b.amount)/Math.max(1,num(b.every)||1); }
+var INC_COLORS=["--inc1","--inc2","--inc3","--inc4"];
+function incomeColor(id){
+  for(var i=0;i<state.incomes.length;i++)
+    if(state.incomes[i].id===id) return cssVar(INC_COLORS[i%INC_COLORS.length]);
+  return cssVar("--ink-faint");
+}
+/* months in which one income pays three times — counted from the first of this
+   month so the current one isn't undercounted */
+function bonusMonths(){
+  var n0=new Date(), from=sod(new Date(n0.getFullYear(),n0.getMonth(),1));
+  var to=addDays(from,HORIZON_DAYS+62), map={};
+  state.incomes.forEach(function(inc){
+    var counts={}, hits={};
+    incomeEvents(inc,from,to).forEach(function(d){
+      var k=d.getFullYear()+"-"+d.getMonth();
+      counts[k]=(counts[k]||0)+1;
+    });
+    for(var k in counts) if(counts[k]>=3) hits[k]=true;
+    map[inc.id]=hits;
+  });
+  return map;
+}
+
 /* a sinking pot's balance: every set-aside ticked, less every payment made */
 function potBalance(billId){
   var inSum=0, outSum=0, k;
@@ -442,8 +456,12 @@ function potBalance(billId){
 }
 /* how many of your paychecks land between now and a date */
 function checksUntil(date){
-  var ds=primaryPayDates(state.incomes[0],40,true), today=sod(new Date()), n=0;
-  for(var i=0;i<ds.length;i++) if(ds[i]>=today && ds[i]<=date) n++;
+  var today=sod(new Date());
+  if(date<=today) return 0;
+  var seen={}, n=0;
+  eventsIn(today,addDays(date,1)).forEach(function(e){
+    var k=toISO(e.date); if(!seen[k]){ seen[k]=true; n++; }
+  });
   return n;
 }
 /* the next few non-monthly bills, so a big one is never a surprise */
@@ -452,33 +470,44 @@ function bigBillsAhead(n){
   state.bills.forEach(function(b){
     if((num(b.every)||1)<=1) return;
     billOccurrences(b,today,addDays(today,400)).forEach(function(d){
+      if(state.paid[b.id+"_"+toISO(d)]!==undefined) return;   // already settled
       out.push({id:b.id,name:b.name,date:d,amount:num(b.amount),spread:b.spread!==false,every:num(b.every)});
     });
   });
   out.sort(function(a,b){ return a.date-b.date; });
   return out.slice(0,n||4);
 }
-function perCheckRates(){
+var DAYS_PER_MONTH=365.25/12;
+function monthlyRates(){
   var debtMin=state.debts.reduce(function(s,d){return s+num(d.minimum);},0);
   var spendM=state.life.filter(function(l){return l.kind!=="save";}).reduce(function(s,l){return s+num(l.monthly);},0);
   var saveM=state.life.filter(function(l){return l.kind==="save";}).reduce(function(s,l){return s+num(l.monthly);},0);
-  return {debt:(debtMin+num(state.extraDebtMonthly))*PER_CHECK,
-          spend:spendM*PER_CHECK, save:saveM*PER_CHECK};
+  return {debt:debtMin+num(state.extraDebtMonthly), spend:spendM, save:saveM};
 }
-function makePeriod(start,end,index,rates){
-  var income=0, sources=[];
+function eventsIn(start,end){
+  var out=[];
   state.incomes.forEach(function(inc){
-    incomeEvents(inc,start,end).forEach(function(d){
-      var k=inc.id+"_"+toISO(d);
-      var amt=amountFor(inc,k);
-      income+=amt;
-      sources.push({incomeId:inc.id,date:d,amount:amt,key:k,daily:inc.payType==="daily",days:daysFor(inc,k)});
-    });
+    incomeEvents(inc,start,end).forEach(function(d){ out.push({inc:inc,date:d}); });
+  });
+  out.sort(function(a,b){ return a.date-b.date; });
+  return out;
+}
+function makePeriod(start,end,index,mr,zeroRates){
+  var days=Math.max(1,Math.round((end-start)/86400000));
+  var f = zeroRates ? 0 : days/DAYS_PER_MONTH;
+  var rates={debt:mr.debt*f, spend:mr.spend*f, save:mr.save*f};
+  var income=0, sources=[];
+  eventsIn(start,end).forEach(function(e){
+    var inc=e.inc, k=inc.id+"_"+toISO(e.date);
+    var amt=amountFor(inc,k);
+    income+=amt;
+    sources.push({incomeId:inc.id,date:e.date,amount:amt,key:k,
+                  daily:inc.payType==="daily",days:daysFor(inc,k)});
   });
   var hits=[], aside=0, asideItems=[];
   state.bills.forEach(function(b){
     if(b.spread && (num(b.every)||1)>1){
-      var per=monthlyEquiv(b)*PER_CHECK, ak=b.id+"_"+toISO(start);
+      var per=monthlyEquiv(b)*f, ak=b.id+"_"+toISO(start);
       aside+=per;
       asideItems.push({id:b.id,key:ak,name:b.name,planned:per,
                        set:state.aside[ak]!==undefined,actual:num(state.aside[ak])});
@@ -497,41 +526,41 @@ function makePeriod(start,end,index,rates){
   var paidPlanned=settled.reduce(function(s,b){return s+b.amount;},0);
   var committed=billTotal+aside+rates.debt+rates.spend+rates.save;
   return {index:index,start:start,end:end,sources:sources,income:income,bills:hits,
-    billTotal:billTotal,aside:aside,asideItems:asideItems,paidTotal:paidTotal,paidPlanned:paidPlanned,
+    days:days,billTotal:billTotal,aside:aside,asideItems:asideItems,
+    paidTotal:paidTotal,paidPlanned:paidPlanned,
     paidCount:settled.length,variance:paidTotal-paidPlanned,
     outstanding:billTotal-paidPlanned,
     debt:rates.debt,spend:rates.spend,save:rates.save,free:income-committed,
     monthKey:start.getFullYear()+"-"+start.getMonth()};
 }
 function buildPeriods(){
-  var dates=primaryPayDates(state.incomes[0],HORIZON+1,true);
-  if(dates.length<2) return [];
-  var rates=perCheckRates(), periods=[], today=sod(new Date());
-  /* anything arriving or due between today and the first payday needs a home.
-     No check starts here, so the per-check allocations are zero. */
-  if(dates[0]>today){
-    var gap=makePeriod(today,dates[0],0,{debt:0,spend:0,save:0});
-    if(gap.sources.length||gap.bills.length){ gap.current=true; gap.partial=true; periods.push(gap); }
+  var today=sod(new Date()), horizon=addDays(today,HORIZON_DAYS);
+  var evs=eventsIn(today,horizon);
+  if(!evs.length) return [];
+  var dayList=[], seen={};
+  evs.forEach(function(e){ var k=toISO(e.date); if(!seen[k]){ seen[k]=true; dayList.push(e.date); } });
+  var mr=monthlyRates(), periods=[];
+  if(dayList[0]>today){
+    var gap=makePeriod(today,dayList[0],0,mr,true);
+    if(gap.bills.length){ gap.current=true; gap.partial=true; periods.push(gap); }
   }
-  for(var i=0;i<Math.min(HORIZON,dates.length-1);i++){
-    var pd=makePeriod(dates[i],dates[i+1],i,rates);
+  for(var i=0;i<dayList.length;i++){
+    var stop=(i+1<dayList.length)?dayList[i+1]:addDays(dayList[i],14);
+    var pd=makePeriod(dayList[i],stop,i,mr);
     pd.current = pd.start<=today && pd.end>today;
     periods.push(pd);
   }
   periods.forEach(function(x,ix){ x.index=ix; });
-  var counts={};
-  periods.forEach(function(p){ counts[p.monthKey]=(counts[p.monthKey]||0)+1; });
-  periods.forEach(function(p){ p.thirdCheck=counts[p.monthKey]>=3; });
   return periods;
 }
 /* pay periods that have already closed, newest first */
 function buildHistory(back){
   var first=primaryPayDates(state.incomes[0],1,true)[0];
   if(!first) return [];
-  var rates=perCheckRates(), out=[];
+  var mr=monthlyRates(), out=[];
   for(var i=1;i<=(back||4);i++){
     var start=addDays(first,-14*i), end=addDays(first,-14*(i-1));
-    out.push(makePeriod(start,end,-i,rates));
+    out.push(makePeriod(start,end,-i,mr));
   }
   return out;
 }
@@ -997,13 +1026,22 @@ function renderPlan(m){
   });
 
   var tlCard=el("section","card");
-  tlCard.appendChild(el("h2",null,"The next six months"));
-  tlCard.appendChild(el("p","muted","One row per stretch between your paydays. Tap a row to see every check landing in it, with its own date. For pay by the day, enter the days worked and the dollars follow."));
+  tlCard.appendChild(el("h2",null,"Every check coming in"));
+  tlCard.appendChild(el("p","muted","One row per payday, whoever it belongs to. The figure on the right is what's left after that stretch's bills and set-asides. For pay by the day, enter the days worked and the dollars follow."));
   var tl=el("div"); tlCard.appendChild(tl);
-  tlCard.appendChild(el("p","muted foot","A dot marks a month with three paychecks — the bills stay the same, so that check is mostly yours."));
+  var key=el("div","bonus-key");
+  state.incomes.forEach(function(inc){
+    var sp=document.createElement("span");
+    var sw=el("span","swatch"); sw.style.background=incomeColor(inc.id); sw.style.marginRight="0";
+    sp.appendChild(sw); sp.appendChild(document.createTextNode(inc.name));
+    key.appendChild(sp);
+  });
+  tlCard.appendChild(key);
+  tlCard.appendChild(el("p","muted foot","A coloured dot marks a month where that income is paid three times — the bills stay the same, so the extra is largely yours. Each stretch carries a share of your monthly commitments proportional to its length, so two paydays close together don't double-count."));
   m.appendChild(tlCard);
 
   var outCells=[], amtCells=[], totCells=[];
+  var bonus=bonusMonths();
   function incOf(id){ return state.incomes.filter(function(x){return x.id===id;})[0]; }
   function sourceControl(src,inc,into){
     if(inc.payType==="daily"){
@@ -1027,53 +1065,77 @@ function renderPlan(m){
     var r=el("div","tl-row"), d=el("div","tl-date");
     d.appendChild(document.createTextNode(fmtShort(p.start)));
     if(p.current) d.appendChild(el("span","nowtag","NOW"));
-    else if(p.thirdCheck){ var pip=el("span","pip"); pip.title="Third check this month"; d.appendChild(pip); }
+    /* a dot per income that gets a third cheque in this one's month */
+    p.sources.forEach(function(src){
+      var mk=src.date.getFullYear()+"-"+src.date.getMonth();
+      if(bonus[src.incomeId] && bonus[src.incomeId][mk]){
+        var inc0=incOf(src.incomeId);
+        var dot=el("span","bonus");
+        dot.style.background=incomeColor(src.incomeId);
+        dot.title=(inc0?inc0.name:"This income")+" is paid three times this month";
+        d.appendChild(dot);
+      }
+    });
     r.appendChild(d);
     var inWrap=el("div","tl-in");
-
-    if(p.sources.length===1){
-      var inc1=incOf(p.sources[0].incomeId);
-      if(inc1){
-        if(toISO(p.sources[0].date)!==toISO(p.start))
-          inWrap.appendChild(el("span","tl-srcdate",fmtShort(p.sources[0].date)));
-        sourceControl(p.sources[0],inc1,inWrap);
-      } else inWrap.appendChild(el("span","tl-multi",money0(p.income)));
-    } else if(p.sources.length===0){
-      inWrap.appendChild(el("span","tl-multi","\u2014"));
-    } else {
-      var tot=el("span","tl-multi"); totCells.push({el:tot,index:p.index});
-      inWrap.appendChild(tot);
-      var chev=el("span","chev","\u203a"); inWrap.appendChild(chev);
-    }
+    var tot=el("span","tl-multi");
+    if(p.sources.length) totCells.push({el:tot,index:p.index}); else tot.textContent="\u2014";
+    inWrap.appendChild(tot);
     r.appendChild(inWrap);
     var out=el("div","tl-out"); r.appendChild(out); outCells.push(out);
     wrap.appendChild(r);
 
-    if(p.sources.length>1){
-      r.classList.add("tappable");
-      var detail=el("div","tl-detail");
-      detail.appendChild(el("div","tl-cover",
-        (p.partial?"Before your next payday \u00b7 ":"Covers ")
-        +fmtShort(p.start)+" \u2013 "+fmtShort(addDays(p.end,-1))));
+    /* every check in this stretch, always visible — no tapping */
+    if(p.sources.length){
+      var detail=el("div","tl-detail open");
       p.sources.forEach(function(src){
         var inc=incOf(src.incomeId); if(!inc) return;
         var line=el("div","tl-src");
-        line.appendChild(el("div","tl-srcname",inc.name));
+        var nm=el("div","tl-srcname");
+        var sw=el("span","swatch"); sw.style.background=incomeColor(inc.id);
+        nm.appendChild(sw); nm.appendChild(document.createTextNode(inc.name));
+        line.appendChild(nm);
         var sub2=el("div","tl-srcline");
-        sub2.appendChild(el("span","tl-srcdate",fmtShort(src.date)));
+        if(toISO(src.date)!==toISO(p.start))
+          sub2.appendChild(el("span","tl-srcdate",fmtShort(src.date)));
         sourceControl(src,inc,sub2);
         line.appendChild(sub2);
         detail.appendChild(line);
       });
       wrap.appendChild(detail);
-      r.addEventListener("click",safe(function(e){
-        if(e.target && e.target.tagName==="INPUT") return;
-        var open=detail.classList.toggle("open");
-        if(open) chev.classList.add("open"); else chev.classList.remove("open");
-      }));
+    } else if(p.bills.length){
+      var nb=el("div","tl-detail open");
+      nb.appendChild(el("div","tl-cover","No check lands here \u2014 "
+        +p.bills.length+(p.bills.length===1?" bill is":" bills are")+" due from what you already have"));
+      wrap.appendChild(nb);
     }
     tl.appendChild(wrap);
   });
+
+  var potCells=[];
+  function paintPots(){
+    potCells.forEach(function(c){
+      var x=c.x, have=potBalance(x.id), need=Math.max(0,x.amount-have);
+      var checks=checksUntil(x.date);
+      c.fill.style.width=Math.min(100,x.amount>0?(Math.max(0,have)/x.amount)*100:0)+"%";
+      if(have<0){
+        c.note.textContent="Pot is "+money0(-have)+" overdrawn \u2014 the last bill cost more than it held. "
+          +(checks>0?money0(need/checks)+" a check to catch up and cover "+fmtShort(x.date):"");
+        c.note.style.color=cssVar("--short");
+      } else if(need<=0.005){
+        c.note.textContent=money0(have)+" set aside \u2014 fully covered.";
+        c.note.style.color=cssVar("--free");
+      } else if(checks>0){
+        var per=need/checks, planned=monthlyEquiv({amount:x.amount,every:x.every})*PER_CHECK;
+        c.note.textContent=money0(have)+" of "+money0(x.amount)+" set aside \u00b7 "
+          +checks+(checks===1?" check":" checks")+" to go \u00b7 "+money0(per)+" each from here";
+        c.note.style.color = per>planned*1.05 ? cssVar("--short") : cssVar("--free");
+      } else {
+        c.note.textContent=money0(have)+" of "+money0(x.amount)+" set aside \u00b7 due now";
+        c.note.style.color=cssVar("--short");
+      }
+    });
+  }
 
   var ahead=bigBillsAhead(5);
   if(ahead.length){
@@ -1087,20 +1149,11 @@ function renderPlan(m){
         money(x.amount), x.spread?null:cssVar("--life")));
       if(!x.spread || seen[x.id]) return;
       seen[x.id]=true;
-      var have=potBalance(x.id), need=Math.max(0,x.amount-have);
-      var checks=checksUntil(x.date);
       var bar=el("div","prog"), fill=el("div","prog-fill");
-      fill.style.width=Math.min(100,x.amount>0?(have/x.amount)*100:0)+"%";
       bar.appendChild(fill); ac.appendChild(bar);
       var note=el("div","pot-note");
-      if(need<=0.005) note.textContent=money0(have)+" set aside \u2014 fully covered.";
-      else if(checks>0){
-        var per=need/checks, planned=monthlyEquiv({amount:x.amount,every:x.every})*PER_CHECK;
-        note.textContent=money0(have)+" of "+money0(x.amount)+" set aside \u00b7 "
-          +checks+(checks===1?" check":" checks")+" to go \u00b7 "+money0(per)+" each from here";
-        note.style.color = per>planned*1.05 ? cssVar("--short") : cssVar("--free");
-      } else note.textContent=money0(have)+" of "+money0(x.amount)+" set aside \u00b7 due now";
       ac.appendChild(note);
+      potCells.push({note:note,fill:fill,x:x});
     });
     m.appendChild(ac);
   }
@@ -1201,6 +1254,7 @@ function renderPlan(m){
         tally.appendChild(v);
       }
     }
+    paintPots();
     asideCells.forEach(function(c){
       var isSet=state.aside[c.item.key]!==undefined;
       c.box.classList[isSet?"add":"remove"]("on");
@@ -1495,10 +1549,10 @@ function renderBills(m){
       h.el.innerHTML="";
       var big=document.createElement("b"); big.textContent=money0(sum); h.el.appendChild(big);
       h.el.appendChild(document.createTextNode(
-        items.length+(items.length===1?" bill":" bills")+" \u00b7 "+money0(sum*PER_CHECK)+" a check"));
+        items.length+(items.length===1?" bill":" bills")+" \u00b7 "+money0(sum*PER_CHECK)+" every 2 weeks"));
     });
     var t=totals(); slot.innerHTML="";
-    slot.appendChild(lineRow("Every month",money(t.bills*PER_CHECK)+" a check",money(t.bills),null,true));
+    slot.appendChild(lineRow("Every month",money(t.bills*PER_CHECK)+" every 2 weeks",money(t.bills),null,true));
   };
   refresh();
 }
@@ -1517,7 +1571,7 @@ function renderLife(m){
     card.appendChild(stackRow(
       textInput(function(){return l.name;},function(v){l.name=v;}),
       [{label:"Per month",control:moneyInput(function(){return num(l.monthly);},function(v){l.monthly=v;},120)},
-       {label:"Per check",control:per}],
+       {label:"Per 2 weeks",control:per}],
       function(){ state.life=state.life.filter(function(x){return x.id!==l.id;}); touched(); render(); },
       {canUp:li>0, canDown:li<spendItems.length-1,
        up:moveHandler("life",l.id,-1,isSpend), down:moveHandler("life",l.id,1,isSpend)}));
@@ -1534,7 +1588,7 @@ function renderLife(m){
     var wrap=stackRow(
       textInput(function(){return l.name;},function(v){l.name=v;}),
       [{label:"Per month",control:moneyInput(function(){return num(l.monthly);},function(v){l.monthly=v;},120)},
-       {label:"Per check",control:per},
+       {label:"Per 2 weeks",control:per},
        {label:"Goal",control:moneyInput(function(){return num(l.target);},function(v){l.target=v;},120)},
        {label:"Saved so far",control:moneyInput(function(){return num(l.saved);},function(v){l.saved=v;},120)}],
       function(){ state.life=state.life.filter(function(x){return x.id!==l.id;}); touched(); render(); },
@@ -1565,7 +1619,7 @@ function renderLife(m){
       } else { p.prog.style.display="none"; p.note.style.display="none"; }
     });
     var t=totals(); slot.innerHTML="";
-    slot.appendChild(lineRow("Life, every month",money((t.spend+t.save)*PER_CHECK)+" a check",money(t.spend+t.save),null,true));
+    slot.appendChild(lineRow("Life, every month",money((t.spend+t.save)*PER_CHECK)+" every 2 weeks",money(t.spend+t.save),null,true));
   };
   refresh();
 }
