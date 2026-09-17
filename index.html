@@ -147,6 +147,13 @@ select.sel, input.date { flex:1; font-size:15px; }
 .cat-chev { font-size:15px; color:var(--ink-faint); flex:none; transition:transform .15s ease; }
 .cat-chev.open { transform:rotate(90deg); }
 .cat-body { display:none; padding:0 13px 6px; }
+.varies-hint { font-size:12px; line-height:1.5; color:var(--ink-soft);
+  padding:8px 0 2px; }
+.varies-btns { display:flex; gap:6px; margin-top:7px; flex-wrap:wrap; }
+button.mini { font:inherit; font-size:12px; font-weight:500; background:var(--well);
+  border:1px solid var(--rule); border-radius:4px; color:var(--ink);
+  padding:7px 10px; cursor:pointer; }
+button.mini:active { background:var(--track); }
 .cat-tools { display:flex; align-items:center; gap:4px; padding:10px 0 9px;
   border-bottom:1px solid var(--rule); }
 .cat-tools input { flex:1; min-width:0; font-size:15px; font-weight:600; }
@@ -277,7 +284,7 @@ window.FIREBASE_CONFIG = {
 (function () {
 "use strict";
 
-var BUILD = "2026-09-15v";
+var BUILD = "2026-09-15w";
 var LS = "paycheck-ledger-v2";
 var HORIZON_DAYS = 120;
 var PER_CHECK = 12 / 26;
@@ -360,6 +367,7 @@ function normalize(raw){
     b.every=[1,3,6,12].indexOf(num(b.every))>=0?num(b.every):1;
     b.anchorMonth=Math.min(11,Math.max(0,Math.round(num(b.anchorMonth))||0));
     b.spread = b.spread===undefined ? (b.every>1) : !!b.spread;
+    b.varies = !!b.varies;
   });
   o.catList = Array.isArray(raw.catList)
     ? raw.catList.filter(function(c){ return typeof c==="string" && c.trim(); })
@@ -453,6 +461,25 @@ function bonusMonths(){
   return map;
 }
 
+/* everything recorded against one bill, newest first */
+function billHistory(billId){
+  var out=[], pre=billId+"_";
+  for(var k in state.paid){
+    if(k.indexOf(pre)!==0) continue;
+    var d=fromISO(k.slice(pre.length));
+    if(d) out.push({date:d,amount:num(state.paid[k])});
+  }
+  out.sort(function(a,b){ return b.date-a.date; });
+  return out;
+}
+function historyStats(billId){
+  var h=billHistory(billId);
+  if(!h.length) return null;
+  var total=0, hi=h[0].amount, lo=h[0].amount;
+  h.forEach(function(x){ total+=x.amount; if(x.amount>hi) hi=x.amount; if(x.amount<lo) lo=x.amount; });
+  return {list:h, n:h.length, avg:total/h.length, hi:hi, lo:lo};
+}
+
 /* a sinking pot's balance: every set-aside ticked, less every payment made */
 function potBalance(billId){
   var inSum=0, outSum=0, k;
@@ -521,7 +548,7 @@ function makePeriod(start,end,index,mr,zeroRates){
     }
     billOccurrences(b,start,end).forEach(function(d){
       var key=b.id+"_"+toISO(d);
-      hits.push({id:b.id,key:key,name:b.name,date:d,amount:num(b.amount),
+      hits.push({id:b.id,key:key,name:b.name,date:d,amount:num(b.amount),varies:!!b.varies,
                  paid:state.paid[key]!==undefined,actual:num(state.paid[key])});
     });
   });
@@ -1270,7 +1297,7 @@ function renderPlan(m){
       c.when.textContent=isPaid?"paid":fmtShort(c.hit.date);
       c.plan.style.display=isPaid?"none":"";
       c.mi.style.display=isPaid?"":"none";
-      c.plan.textContent=money(c.hit.amount);
+      c.plan.textContent=(c.hit.varies?"~":"")+money(c.hit.amount);
     });
     tally.innerHTML="";
     if(n.bills.length){
@@ -1455,7 +1482,7 @@ function addCategory(){
 function renderBills(m){
   var card=el("section","card");
   card.appendChild(el("h2",null,"Bills that show up every month"));
-  card.appendChild(el("p","muted","Anything with a due date, however often it comes round. Set a bill to twice a year or yearly and it can put a slice aside from every check, so a big one never lands on a single paycheck. Totals below are per month, with the interval already divided out."));
+  card.appendChild(el("p","muted","Anything with a due date, however often it comes round. If an amount moves around \u2014 electricity, water \u2014 set it to vary and enter your best estimate; ticking it paid each month records what it really cost and the average appears here. Set a bill to twice a year or yearly and it can put a slice aside from every check, so a big one never lands on a single paycheck. Totals below are per month, with the interval already divided out."));
   /* categories are an explicit ordered list, so an empty one can exist */
   var order=state.catList.slice(), groups={};
   order.forEach(function(c){ groups[c]=[]; });
@@ -1553,14 +1580,44 @@ function renderBills(m){
         sp.addEventListener("change",safe(function(){ b.spread=(sp.value==="yes"); touched(); reRender(); }));
         fields.push({label:"How you'll cover it",control:sp});
       }
+      var vary=document.createElement("select"); vary.className="sel";
+      vary.style.width="150px"; vary.style.flex="none";
+      [["no","Always the same"],["yes","Varies each time"]].forEach(function(o){
+        var op=document.createElement("option"); op.value=o[0]; op.textContent=o[1]; vary.appendChild(op);
+      });
+      vary.value=b.varies?"yes":"no";
+      vary.addEventListener("change",safe(function(){ b.varies=(vary.value==="yes"); touched(); reRender(); }));
+      fields.push({label:"Amount is",control:vary});
       fields.push({label:"Category",control:cat});
 
-      body.appendChild(stackRow(
+      var built=stackRow(
         textInput(function(){return b.name;},function(v){b.name=v;}),
         fields,
         function(){ state.bills=state.bills.filter(function(x){return x.id!==b.id;}); touched(); render(); },
         {canUp:bi>0, canDown:bi<items.length-1,
-         up:moveHandler("bills",b.id,-1,sameCat), down:moveHandler("bills",b.id,1,sameCat)}));
+         up:moveHandler("bills",b.id,-1,sameCat), down:moveHandler("bills",b.id,1,sameCat)});
+
+      if(b.varies){
+        var st0=historyStats(b.id);
+        var hint=el("div","varies-hint");
+        if(!st0){
+          hint.appendChild(el("span",null,"No payments recorded yet. Tick this bill paid on the Plan tab each month and the real figures collect here."));
+        } else {
+          var recent=st0.list.slice(0,4).map(function(x){ return money0(x.amount); }).join(", ");
+          hint.appendChild(el("span",null,
+            "Last "+Math.min(4,st0.n)+": "+recent+" \u00b7 average "+money0(st0.avg)+", highest "+money0(st0.hi)));
+          var row2=el("div","varies-btns");
+          row2.appendChild(btn("mini","Use average "+money0(st0.avg),function(){
+            b.amount=Math.round(st0.avg*100)/100; touched(); reRender();
+          }));
+          row2.appendChild(btn("mini","Use highest "+money0(st0.hi),function(){
+            b.amount=st0.hi; touched(); reRender();
+          }));
+          hint.appendChild(row2);
+        }
+        built.appendChild(hint);
+      }
+      body.appendChild(built);
     });
     body.appendChild(btn("add","Add a bill to "+cname,function(){
       state.bills.push({id:uid(),name:"New bill",amount:0,dueDay:1,category:cname});
