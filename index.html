@@ -147,6 +147,11 @@ select.sel, input.date { flex:1; font-size:15px; }
 .cat-chev { font-size:15px; color:var(--ink-faint); flex:none; transition:transform .15s ease; }
 .cat-chev.open { transform:rotate(90deg); }
 .cat-body { display:none; padding:0 13px 6px; }
+.stub { margin-top:12px; padding:11px 12px; background:var(--well);
+  border:1px solid var(--rule); border-radius:5px; }
+.stub-head { font-size:12px; font-weight:600; color:var(--ink-soft); margin-bottom:8px; }
+.stub-fields { display:flex; gap:10px; flex-wrap:wrap; }
+.stub-res { font-size:12px; line-height:1.5; color:var(--ink); margin-top:9px; }
 .varies-hint { font-size:12px; line-height:1.5; color:var(--ink-soft);
   padding:8px 0 2px; }
 .varies-btns { display:flex; gap:6px; margin-top:7px; flex-wrap:wrap; }
@@ -284,7 +289,7 @@ window.FIREBASE_CONFIG = {
 (function () {
 "use strict";
 
-var BUILD = "2026-09-15x";
+var BUILD = "2026-09-15z";
 var LS = "paycheck-ledger-v2";
 var HORIZON_DAYS = 120;
 var PER_CHECK = 12 / 26;
@@ -362,6 +367,7 @@ function normalize(raw){
     strategy:(raw.strategy==="snowball"||raw.strategy==="manual")?raw.strategy:"avalanche"
   };
   [o.incomes,o.bills,o.debts,o.life].forEach(function(arr){ arr.forEach(function(x){ if(!x.id) x.id=uid(); }); });
+  o.incomes.forEach(function(x){ x.grossPer=num(x.grossPer); });
   o.bills.forEach(function(b){
     if(!b.category) b.category="Other";
     b.every=[1,3,6,12].indexOf(num(b.every))>=0?num(b.every):1;
@@ -641,6 +647,32 @@ function oneOffsAhead(){
     if(d && d>=today && d<end) out.push({name:inc.name,date:d,amount:num(inc.baseline)});
   });
   out.sort(function(a,b){ return a.date-b.date; });
+  return out;
+}
+/* gross for the next twelve months, for incomes where a gross figure is known */
+function yearGross(){
+  var today=sod(new Date()), end=addDays(today,365), known=0, netOfKnown=0, any=false;
+  state.incomes.forEach(function(inc){
+    var g=num(inc.grossPer); if(g<=0) return;
+    any=true;
+    var evs=incomeEvents(inc,today,end);
+    evs.forEach(function(d){
+      var k=inc.id+"_"+toISO(d);
+      known += inc.payType==="daily" ? g*daysFor(inc,k) : g;
+      netOfKnown += amountFor(inc,k);
+    });
+  });
+  return any ? {gross:known, net:netOfKnown} : null;
+}
+/* the next twelve months of actual pay events, per income — this respects any
+   days or amounts already entered, and counts 26 or 27 checks honestly */
+function yearByIncome(){
+  var today=sod(new Date()), end=addDays(today,365), out=[];
+  state.incomes.forEach(function(inc){
+    var evs=incomeEvents(inc,today,end), sum=0;
+    evs.forEach(function(d){ sum+=amountFor(inc,inc.id+"_"+toISO(d)); });
+    out.push({inc:inc,n:evs.length,sum:sum});
+  });
   return out;
 }
 /* every commitment as one flat, ranked list */
@@ -1041,6 +1073,7 @@ function renderGate(){
 var refresh=function(){};
 var openCats={};   /* per-device, not synced — collapsing on one phone shouldn't collapse the other */
 var openRows={};   /* same, for the timeline */
+var stub={};       /* scratch pad for the pay-stub calculator, not saved */
 var TABS=[["plan","Plan"],["totals","Totals"],["income","Income"],["bills","Bills"],
           ["life","Life"],["debt","Debt"],["data","Data"]];
 
@@ -1399,7 +1432,20 @@ function renderTotals(m){
     m.appendChild(a); return;
   }
   var big=el("div","hero-amt",money(inc)); a.appendChild(big);
-  a.appendChild(el("div","hero-note","coming in each month"));
+  a.appendChild(el("div","hero-note","take-home each month, everyone's pay combined"));
+  if(state.incomes.length>1){
+    var who=el("div"); who.style.marginTop="10px";
+    state.incomes.forEach(function(x){
+      var mi=monthlyIncome(x);
+      if(mi<=0 && x.cadence!=="once") return;
+      if(x.cadence==="once") return;
+      var rw=lineRow(x.name,pct(mi),money(mi));
+      var sw=el("span","swatch"); sw.style.background=incomeColor(x.id);
+      rw.insertBefore(sw,rw.firstChild);
+      who.appendChild(rw);
+    });
+    a.appendChild(who);
+  }
 
   var bar=el("div","bar"); bar.style.marginTop="14px";
   bar.setAttribute("role","img"); bar.setAttribute("aria-label","Where a month goes");
@@ -1435,23 +1481,68 @@ function renderTotals(m){
 
   var c=el("section","card");
   c.appendChild(el("h2",null,"Over a year"));
-  var offs=oneOffsAhead(), offTotal=0;
-  offs.forEach(function(o){ offTotal+=o.amount; });
-  c.appendChild(lineRow("Coming in","from work",money(inc*12)));
-  offs.forEach(function(o){ c.appendChild(lineRow(o.name,fmtShort(o.date),money(o.amount),C.free)); });
+  var yb=yearByIncome(), yearIn=0;
+  yb.forEach(function(x){
+    if(x.n===0) return;
+    yearIn+=x.sum;
+    var rw=lineRow(x.inc.name,
+      x.inc.cadence==="once" ? "one-off" : x.n+" checks \u00d7 "+money0(x.sum/x.n),
+      money(x.sum));
+    if(x.inc.cadence!=="once"){
+      var sw=el("span","swatch"); sw.style.background=incomeColor(x.inc.id);
+      rw.insertBefore(sw,rw.firstChild);
+    }
+    c.appendChild(rw);
+  });
+  c.appendChild(lineRow("Take-home, all in","after tax, before anything goes out",money(yearIn),null,true));
   c.appendChild(lineRow("Bills","",money(t.bills*12),C.bills));
   c.appendChild(lineRow("Debt payments","",money(debt*12),C.debt));
   c.appendChild(lineRow("Spending money","",money(t.spend*12),C.life));
   c.appendChild(lineRow("Saving up","",money(t.save*12),C.life));
-  var yearLeft=inc*12+offTotal-out*12;
+  var yearLeft=yearIn-out*12;
   c.appendChild(lineRow(yearLeft>=0?"Left over":"Short by","",money(Math.abs(yearLeft)),
     yearLeft>=0?C.free:C.short,true));
-  c.appendChild(el("p","muted foot","Twelve times a typical month, plus any one-off money already on the books. It won't match reality to the dollar \u2014 days worked move, and bills that vary move with them."));
+  var yg=yearGross();
+  if(yg && yg.gross>0){
+    var took=yg.gross-yg.net, rate=Math.round(took/yg.gross*1000)/10;
+    c.appendChild(el("h3",null,"What comes off the top"));
+    c.appendChild(lineRow("Gross, where known","before anything is withheld",money(yg.gross)));
+    c.appendChild(lineRow("Withheld",rate+"% of gross",money(took),C.short));
+    c.appendChild(el("p","muted foot","Measured from the gross and take-home figures you entered, not modelled \u2014 it covers tax, FICA and any deduction that comes off before the money lands. Only incomes with a gross figure are counted."));
+  }
+  c.appendChild(el("p","muted foot","Income is counted from the actual pay dates in the next twelve months, using the amounts you entered \u2014 so it's take-home, not salary, and it already includes every earner listed on the Income tab. Outgoings are twelve times a typical month. It won't match reality to the dollar: days worked move, and bills that vary move with them."));
   m.appendChild(c);
 }
 
 function renderIncome(m){
-  var card=el("section","card"), estCells=[], dateCells=[];
+  var card=el("section","card"), estCells=[], dateCells=[], stubCells=[];
+  function paintStub(){
+    stubCells.forEach(function(c){
+      var v=stub[c.inc.id]||{}, g=num(v.g), n=num(v.n);
+      c.res.innerHTML=""; c.act.innerHTML="";
+      if(g<=0||n<=0){
+        c.res.textContent="Enter the gross and net from one stub and this works out the rest.";
+        return;
+      }
+      var kept=n/g, tookPct=Math.round((1-kept)*1000)/10;
+      if(c.inc.payType==="daily"){
+        var dd=num(v.d);
+        if(dd<=0){ c.res.textContent="Add the number of days that stub covered."; return; }
+        var perDay=n/dd;
+        c.res.textContent=money(perDay)+" take-home a day \u00b7 "+tookPct+"% withheld \u00b7 gross "+money(g/dd)+" a day";
+        c.act.appendChild(btn("mini","Use "+money(perDay)+" a day",function(){
+          c.inc.dayRate=Math.round(perDay*100)/100;
+          c.inc.grossPer=Math.round(g/dd*100)/100;
+          touched(); reRender();
+        }));
+      } else {
+        c.res.textContent=money(n)+" take-home a check \u00b7 "+tookPct+"% withheld";
+        c.act.appendChild(btn("mini","Use "+money(n)+" a check",function(){
+          c.inc.baseline=n; c.inc.grossPer=g; touched(); reRender();
+        }));
+      }
+    });
+  }
   card.appendChild(el("h2",null,"Money coming in"));
   card.appendChild(el("p","muted","Set a baseline you can count on in a light pay period, not your best one. Every bill and fund below gets sized to fit that number, so a slow stretch never breaks the plan."));
   state.incomes.forEach(function(inc,idx){
@@ -1473,6 +1564,8 @@ function renderIncome(m){
     } else if(inc.payType==="daily"){
       b.appendChild(row([el("label",null,"Take-home per day"),
         moneyInput(function(){return num(inc.dayRate);},function(v){inc.dayRate=v;})]));
+      b.appendChild(row([el("label",null,"Gross per day"),
+        moneyInput(function(){return num(inc.grossPer);},function(v){inc.grossPer=v;})]));
       b.appendChild(row([el("label",null,"Days in a typical check"),
         countInput(function(){return num(inc.typicalDays);},function(v){inc.typicalDays=v;})]));
       b.appendChild(row([el("label",null,"Fewest days you'd work"),
@@ -1482,6 +1575,8 @@ function renderIncome(m){
       b.appendChild(est);
     } else {
       b.appendChild(row([el("label",null,"Typical check"),moneyInput(function(){return num(inc.baseline);},function(v){inc.baseline=v;})]));
+      b.appendChild(row([el("label",null,"Gross per check"),
+        moneyInput(function(){return num(inc.grossPer);},function(v){inc.grossPer=v;})]));
       b.appendChild(row([el("label",null,"A slow check"),moneyInput(function(){return num(inc.low);},function(v){inc.low=v;})]));
     }
     if(oneOff) b.appendChild(el("p","muted foot","A one-time payment. It lands in whichever check covers that date, and stays out of your typical-check figures so it can't flatter the plan."));
@@ -1497,6 +1592,30 @@ function renderIncome(m){
     dt.addEventListener("change",safe(function(){ inc.firstPayDate=dt.value; render(); touched(); }));
     b.appendChild(row([el("label",null,oneOff?"Date it lands":"Next pay date"),dt]));
     var when=el("p","muted foot"); dateCells.push({el:when,inc:inc}); b.appendChild(when);
+    /* the only honest way to get a take-home rate: read it off a real stub */
+    var calc=el("div","stub");
+    calc.appendChild(el("div","stub-head","Work it out from a pay stub"));
+    var f=el("div","stub-fields");
+    var sg=el("div","sfield"); sg.appendChild(el("span","sflabel","Gross on stub"));
+    var sgi=moneyInput(function(){return stub[inc.id]&&stub[inc.id].g||0;},
+      function(v){ stub[inc.id]=stub[inc.id]||{}; stub[inc.id].g=v; paintStub(); },110);
+    sg.appendChild(sgi); f.appendChild(sg);
+    var sn=el("div","sfield"); sn.appendChild(el("span","sflabel","Net on stub"));
+    var sni=moneyInput(function(){return stub[inc.id]&&stub[inc.id].n||0;},
+      function(v){ stub[inc.id]=stub[inc.id]||{}; stub[inc.id].n=v; paintStub(); },110);
+    sn.appendChild(sni); f.appendChild(sn);
+    if(inc.payType==="daily"){
+      var sd=el("div","sfield"); sd.appendChild(el("span","sflabel","Days on stub"));
+      sd.appendChild(countInput(function(){return stub[inc.id]&&stub[inc.id].d||0;},
+        function(v){ stub[inc.id]=stub[inc.id]||{}; stub[inc.id].d=v; paintStub(); },56));
+      f.appendChild(sd);
+    }
+    calc.appendChild(f);
+    var res=el("div","stub-res"), act=el("div","varies-btns");
+    calc.appendChild(res); calc.appendChild(act);
+    stubCells.push({inc:inc,res:res,act:act});
+    b.appendChild(calc);
+
     if(idx===0) b.appendChild(el("p","muted foot","Your pay dates set the rhythm for everything else."));
     card.appendChild(b);
   });
@@ -1513,6 +1632,7 @@ function renderIncome(m){
   m.appendChild(test);
 
   refresh=function(){
+    paintStub();
     dateCells.forEach(function(c){
       var ds=upcomingDates(c.inc,4);
       if(!ds.length){
