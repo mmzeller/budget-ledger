@@ -284,7 +284,7 @@ window.FIREBASE_CONFIG = {
 (function () {
 "use strict";
 
-var BUILD = "2026-09-15w";
+var BUILD = "2026-09-15x";
 var LS = "paycheck-ledger-v2";
 var HORIZON_DAYS = 120;
 var PER_CHECK = 12 / 26;
@@ -620,6 +620,46 @@ function perPeriod(inc,which){
 function upcomingDates(inc,n){
   var today=sod(new Date());
   return incomeEvents(inc,today,addDays(today,430)).slice(0,n||4);
+}
+/* what one income brings in over an average month */
+function monthlyIncome(inc){
+  if(inc.cadence==="once") return 0;
+  var per = inc.payType==="daily"
+    ? num(inc.dayRate)*num(inc.typicalDays)
+    : num(inc.baseline);
+  if(inc.cadence==="weekly") return per*52/12;
+  if(inc.cadence==="biweekly") return per*26/12;
+  if(inc.cadence==="semimonthly") return per*2;
+  return per;
+}
+/* one-time money landing in the next twelve months */
+function oneOffsAhead(){
+  var today=sod(new Date()), end=addDays(today,365), out=[];
+  state.incomes.forEach(function(inc){
+    if(inc.cadence!=="once") return;
+    var d=fromISO(inc.firstPayDate);
+    if(d && d>=today && d<end) out.push({name:inc.name,date:d,amount:num(inc.baseline)});
+  });
+  out.sort(function(a,b){ return a.date-b.date; });
+  return out;
+}
+/* every commitment as one flat, ranked list */
+function outflowLines(){
+  var out=[];
+  state.bills.forEach(function(b){
+    if(monthlyEquiv(b)>0) out.push({name:b.name,amount:monthlyEquiv(b),kind:"bills"});
+  });
+  state.debts.forEach(function(d){
+    if(num(d.minimum)>0) out.push({name:d.name,amount:num(d.minimum),kind:"debt"});
+  });
+  if(num(state.extraDebtMonthly)>0)
+    out.push({name:"Extra toward debt",amount:num(state.extraDebtMonthly),kind:"debt"});
+  state.life.forEach(function(l){
+    if(num(l.monthly)>0) out.push({name:l.name,amount:num(l.monthly),
+      kind:"life",note:l.kind==="save"?"saving up":"spending"});
+  });
+  out.sort(function(a,b){ return b.amount-a.amount; });
+  return out;
 }
 function totals(){
   var bills=state.bills.reduce(function(s,b){return s+monthlyEquiv(b);},0);
@@ -1001,7 +1041,8 @@ function renderGate(){
 var refresh=function(){};
 var openCats={};   /* per-device, not synced — collapsing on one phone shouldn't collapse the other */
 var openRows={};   /* same, for the timeline */
-var TABS=[["plan","Plan"],["income","Income"],["bills","Bills"],["life","Life"],["debt","Debt"],["data","Data"]];
+var TABS=[["plan","Plan"],["totals","Totals"],["income","Income"],["bills","Bills"],
+          ["life","Life"],["debt","Debt"],["data","Data"]];
 
 function render(){
   if(gate){ renderGate(); return; }
@@ -1010,7 +1051,8 @@ function render(){
     nav.appendChild(btn("tab"+(tab===t[0]?" on":""),t[1],function(){ tab=t[0]; render(); window.scrollTo(0,0); }));
   });
   var m=document.getElementById("main"); m.innerHTML=""; refresh=function(){};
-  ({plan:renderPlan,income:renderIncome,bills:renderBills,life:renderLife,debt:renderDebt,data:renderData})[tab](m);
+  ({plan:renderPlan,totals:renderTotals,income:renderIncome,bills:renderBills,
+    life:renderLife,debt:renderDebt,data:renderData})[tab](m);
 }
 
 function renderPlan(m){
@@ -1337,6 +1379,75 @@ function renderPlan(m){
     owedSlot.appendChild(lineRow("Owed across all debts","",money(t.debtBal),C.debt,true));
   };
   refresh();
+}
+
+function renderTotals(m){
+  var t=totals();
+  var inc=0; state.incomes.forEach(function(x){ inc+=monthlyIncome(x); });
+  var debt=t.debtMin+num(state.extraDebtMonthly);
+  var out=t.bills+debt+t.spend+t.save;
+  var left=inc-out;
+  var C={bills:cssVar("--bills"),debt:cssVar("--debt"),life:cssVar("--life"),
+         free:cssVar("--free"),short:cssVar("--short")};
+  var pct=function(v){ return inc>0 ? Math.round(v/inc*100)+"%" : "\u2014"; };
+
+  var a=el("section","card");
+  a.appendChild(el("h2",null,"A typical month"));
+  a.appendChild(el("p","muted","Your recurring setup averaged out \u2014 fortnightly pay spread over the month, bills divided by how often they come round, pay-by-the-day using a typical number of days."));
+  if(inc<=0){
+    a.appendChild(el("div","empty","Add your income and this fills in."));
+    m.appendChild(a); return;
+  }
+  var big=el("div","hero-amt",money(inc)); a.appendChild(big);
+  a.appendChild(el("div","hero-note","coming in each month"));
+
+  var bar=el("div","bar"); bar.style.marginTop="14px";
+  bar.setAttribute("role","img"); bar.setAttribute("aria-label","Where a month goes");
+  var maxv=Math.max(inc,out,1);
+  [[t.bills,C.bills],[debt,C.debt],[t.spend+t.save,C.life],
+   [Math.max(0,left),C.free],[Math.max(0,-left),C.short]].forEach(function(x){
+    if(x[0]<=0) return;
+    var seg=el("div","bar-seg"); seg.style.width=(x[0]/maxv*100)+"%"; seg.style.background=x[1];
+    bar.appendChild(seg);
+  });
+  a.appendChild(bar);
+
+  a.appendChild(lineRow("Bills",pct(t.bills),money(t.bills),C.bills));
+  a.appendChild(lineRow("Debt payments",pct(debt),money(debt),C.debt));
+  a.appendChild(lineRow("Spending money",pct(t.spend),money(t.spend),C.life));
+  a.appendChild(lineRow("Saving up",pct(t.save),money(t.save),C.life));
+  a.appendChild(lineRow(left>=0?"Left over":"Short by",pct(Math.abs(left)),
+    money(Math.abs(left)),left>=0?C.free:C.short,true));
+  if(left<0) a.appendChild(el("div","alarm","A typical month doesn't balance. Something below has to come down, or more has to come in \u2014 no amount of careful timing fixes a gap this size."));
+  m.appendChild(a);
+
+  var b=el("section","card");
+  b.appendChild(el("h2",null,"Where it actually goes"));
+  b.appendChild(el("p","muted","Every commitment on one list, biggest first, as a monthly figure."));
+  var lines=outflowLines();
+  if(!lines.length) b.appendChild(el("p","muted","Nothing entered yet."));
+  lines.slice(0,12).forEach(function(x){
+    b.appendChild(lineRow(x.name, x.note?x.note+" \u00b7 "+pct(x.amount):pct(x.amount),
+      money(x.amount), C[x.kind]));
+  });
+  if(lines.length>12) b.appendChild(el("p","muted foot","Showing the twelve largest."));
+  m.appendChild(b);
+
+  var c=el("section","card");
+  c.appendChild(el("h2",null,"Over a year"));
+  var offs=oneOffsAhead(), offTotal=0;
+  offs.forEach(function(o){ offTotal+=o.amount; });
+  c.appendChild(lineRow("Coming in","from work",money(inc*12)));
+  offs.forEach(function(o){ c.appendChild(lineRow(o.name,fmtShort(o.date),money(o.amount),C.free)); });
+  c.appendChild(lineRow("Bills","",money(t.bills*12),C.bills));
+  c.appendChild(lineRow("Debt payments","",money(debt*12),C.debt));
+  c.appendChild(lineRow("Spending money","",money(t.spend*12),C.life));
+  c.appendChild(lineRow("Saving up","",money(t.save*12),C.life));
+  var yearLeft=inc*12+offTotal-out*12;
+  c.appendChild(lineRow(yearLeft>=0?"Left over":"Short by","",money(Math.abs(yearLeft)),
+    yearLeft>=0?C.free:C.short,true));
+  c.appendChild(el("p","muted foot","Twelve times a typical month, plus any one-off money already on the books. It won't match reality to the dollar \u2014 days worked move, and bills that vary move with them."));
+  m.appendChild(c);
 }
 
 function renderIncome(m){
