@@ -147,6 +147,22 @@ select.sel, input.date { flex:1; font-size:15px; }
 .cat-chev { font-size:15px; color:var(--ink-faint); flex:none; transition:transform .15s ease; }
 .cat-chev.open { transform:rotate(90deg); }
 .cat-body { display:none; padding:0 13px 6px; }
+.month-pills { display:flex; gap:6px; overflow-x:auto; padding:2px 0 12px; scrollbar-width:none; }
+.month-pills::-webkit-scrollbar { display:none; }
+.pill { font:inherit; font-size:13px; font-weight:500; white-space:nowrap; flex:none;
+  background:var(--surface); border:1px solid var(--rule); color:var(--ink-soft);
+  border-radius:999px; padding:7px 13px; cursor:pointer; }
+.pill.on { background:var(--ink); border-color:var(--ink); color:var(--paper); }
+.txn { padding:10px 0; border-bottom:1px solid var(--rule); }
+.txn:last-of-type { border-bottom:none; }
+.txn.ignored .txn-name, .txn.ignored .txn-amt { color:var(--ink-faint); text-decoration:line-through; }
+.txn-top { display:flex; align-items:baseline; gap:9px; font-size:14px; }
+.txn-date { font-size:11px; color:var(--ink-faint); width:44px; flex:none; }
+.txn-name { flex:1; min-width:0; overflow-wrap:anywhere; }
+.txn-amt { font-weight:600; white-space:nowrap; }
+.txn-sub { display:flex; align-items:center; gap:9px; margin:7px 0 0 53px; flex-wrap:wrap; }
+.txn-sub select { flex:none; width:auto; max-width:220px; font-size:14px; padding:6px 8px; }
+.txn-meta { font-size:11px; color:var(--ink-faint); }
 .stub { margin-top:12px; padding:11px 12px; background:var(--well);
   border:1px solid var(--rule); border-radius:5px; }
 .stub-head { font-size:12px; font-weight:600; color:var(--ink-soft); margin-bottom:8px; }
@@ -289,7 +305,7 @@ window.FIREBASE_CONFIG = {
 (function () {
 "use strict";
 
-var BUILD = "2026-09-15z";
+var BUILD = "2026-09-21a";
 var LS = "paycheck-ledger-v2";
 var HORIZON_DAYS = 120;
 var PER_CHECK = 12 / 26;
@@ -347,6 +363,7 @@ function seed(){
       {id:uid(),name:"Car repairs",kind:"save",monthly:0,target:0,saved:0}
     ],
     catList:["Home","Utilities","Car"],
+    txns:[], rules:{}, txnCats:[],
     extraDebtMonthly:0, strategy:"avalanche"
   };
 }
@@ -375,6 +392,12 @@ function normalize(raw){
     b.spread = b.spread===undefined ? (b.every>1) : !!b.spread;
     b.varies = !!b.varies;
   });
+  o.txns = Array.isArray(raw.txns) ? raw.txns.filter(function(t){ return t && t.d && isFinite(num(t.a)); }) : [];
+  o.rules = (raw.rules && typeof raw.rules==="object") ? raw.rules : {};
+  o.txnCats = Array.isArray(raw.txnCats) ? raw.txnCats : [];
+  /* keep eighteen months so the synced document stays well under Firestore's 1 MiB */
+  var cutoff=addDays(sod(new Date()),-548);
+  o.txns = o.txns.filter(function(t){ var dd=fromISO(t.d); return dd && dd>=cutoff; });
   o.catList = Array.isArray(raw.catList)
     ? raw.catList.filter(function(c){ return typeof c==="string" && c.trim(); })
     : [];
@@ -919,6 +942,161 @@ function doRestore(file){
   r.readAsText(file);
 }
 
+/* ===================== statement import ===================== */
+var IGNORE="__ignore__";
+
+/* RFC 4180-ish: quoted fields, doubled quotes, commas and newlines inside quotes */
+function parseCSV(text){
+  var rows=[], row=[], f="", q=false, c;
+  text=String(text||"").replace(/^\uFEFF/,"");
+  for(var i=0;i<text.length;i++){
+    c=text[i];
+    if(q){
+      if(c==='"'){ if(text[i+1]==='"'){ f+='"'; i++; } else q=false; }
+      else f+=c;
+    } else if(c==='"') q=true;
+    else if(c===','){ row.push(f); f=""; }
+    else if(c==='\n'||c==='\r'){
+      if(c==='\r'&&text[i+1]==='\n') i++;
+      row.push(f); f="";
+      if(row.some(function(x){ return x.trim()!==""; })) rows.push(row);
+      row=[];
+    } else f+=c;
+  }
+  if(f!==""||row.length){ row.push(f); if(row.some(function(x){ return x.trim()!==""; })) rows.push(row); }
+  return rows;
+}
+function parseAmt(v){
+  var t=String(v||"").trim(); if(!t) return NaN;
+  var neg=/^\(.*\)$/.test(t)||/^-/.test(t)||/-$/.test(t)||/^\$?\s*-/.test(t);
+  var n=parseFloat(t.replace(/[^0-9.]/g,""));
+  return isFinite(n) ? (neg?-n:n) : NaN;
+}
+function parseDateLoose(v){
+  var t=String(v||"").trim(), m;
+  if((m=t.match(/^(\d{4})-(\d{1,2})-(\d{1,2})/))) return sod(new Date(+m[1],+m[2]-1,+m[3]));
+  if((m=t.match(/^(\d{1,2})\/(\d{1,2})\/(\d{2,4})/))){
+    var y=+m[3]; if(y<100) y+=2000;
+    return sod(new Date(y,+m[1]-1,+m[2]));          /* US order: month first */
+  }
+  var ms=Date.parse(t); return isNaN(ms)?null:sod(new Date(ms));
+}
+/* "TJ MAXX #1234 COLUMBUS IN" and "TJ MAXX 5566" should be the same shop */
+function normMerchant(v){
+  var t=String(v||"").toUpperCase();
+  t=t.replace(/[*#].*$/,"");
+  t=t.replace(/\b\d[\d\-]*\b/g," ");
+  t=t.replace(/[^A-Z&' ]/g," ").replace(/\s+/g," ").trim();
+  var w=t.split(" ").filter(Boolean);
+  if(w.length>2 && /^[A-Z]{2}$/.test(w[w.length-1])) w.pop();   /* trailing state */
+  return w.slice(0,3).join(" ")||"UNKNOWN";
+}
+function detectCols(h){
+  var L=h.map(function(x){ return String(x).toLowerCase().trim(); });
+  function find(res){
+    for(var r=0;r<res.length;r++) for(var i=0;i<L.length;i++) if(res[r].test(L[i])) return i;
+    return -1;
+  }
+  return {
+    date:  find([/^transaction date/,/^trans\.? ?date/,/^date$/,/^posting date/,/^posted/,/date/]),
+    merch: find([/^merchant$/]),
+    desc:  find([/^description/,/payee/,/^name$/,/memo/,/details/,/merchant/]),
+    amount:find([/^amount/,/^amt/]),
+    debit: find([/debit/,/withdrawal/,/money out/]),
+    credit:find([/^credit/,/deposit/,/money in/]),
+    cat:   find([/^category$/]),
+    type:  find([/^type$/,/transaction type/])
+  };
+}
+/* card payments and paychecks are transfers, not spending — counting them
+   would double every purchase that was paid for from checking */
+var INFLOW_SKIP=/payment|transfer|xfer|payroll|direct dep|dir dep|deposit|paycheck|salary|interest paid/i;
+var OUTFLOW_SKIP=/applecard|apple card|gs bank|gsbank|goldman sachs|card pmt|credit card pmt|transfer to|xfer to/i;
+
+function readStatement(text){
+  var rows=parseCSV(text);
+  if(rows.length<2) return {error:"That file doesn't look like a statement \u2014 fewer than two rows."};
+  var hi=0;
+  for(var r=0;r<Math.min(rows.length,10);r++){
+    if(rows[r].some(function(c){ return /date/i.test(c); })){ hi=r; break; }
+  }
+  var header=rows[hi], body=rows.slice(hi+1), cols=detectCols(header);
+  if(cols.date<0) return {error:"Couldn't find a date column.", header:header};
+  if(cols.desc<0 && cols.merch<0) return {error:"Couldn't find a description column.", header:header};
+  if(cols.amount<0 && cols.debit<0) return {error:"Couldn't find an amount column.", header:header};
+
+  /* purchases are the majority of rows on any statement, so whichever sign
+     most rows carry is the sign of money going out */
+  var pos=0, negs=0;
+  if(cols.amount>=0) body.forEach(function(rw){
+    var a=parseAmt(rw[cols.amount]); if(a>0) pos++; else if(a<0) negs++;
+  });
+  var outPositive = cols.amount<0 ? true : pos>=negs;
+  var isCard = header.some(function(c){ return /clearing date/i.test(c); });
+  return {header:header, body:body, cols:cols, outPositive:outPositive,
+          source: isCard ? "Apple Card" : "Checking"};
+}
+function stageTxns(st, sourceName, outPositive){
+  var out=[], seen={}, bad=0;
+  st.body.forEach(function(rw){
+    var d=parseDateLoose(rw[st.cols.date]);
+    var amt;
+    if(st.cols.amount>=0){
+      amt=parseAmt(rw[st.cols.amount]);
+      if(isFinite(amt) && !outPositive) amt=-amt;
+    } else {
+      var db=parseAmt(rw[st.cols.debit]), cr=parseAmt(rw[st.cols.credit]);
+      amt=(isFinite(db)?Math.abs(db):0)-(isFinite(cr)?Math.abs(cr):0);
+    }
+    if(!d || !isFinite(amt) || amt===0){ bad++; return; }
+    var raw=String(rw[st.cols.desc>=0?st.cols.desc:st.cols.merch]||"").trim();
+    var shown=st.cols.merch>=0 && rw[st.cols.merch] ? String(rw[st.cols.merch]).trim() : raw;
+    var m=normMerchant(shown);
+    var type=st.cols.type>=0 ? String(rw[st.cols.type]||"") : "";
+    var ext=st.cols.cat>=0 ? String(rw[st.cols.cat]||"").trim() : "";
+    var inflow=amt<0;
+    var skip = /^payment$/i.test(type) || (inflow && INFLOW_SKIP.test(raw+" "+type))
+               || (!inflow && OUTFLOW_SKIP.test(raw));
+    var base=toISO(d)+"|"+amt.toFixed(2)+"|"+m+"|"+sourceName;
+    seen[base]=(seen[base]||0)+1;
+    out.push({id:base+"#"+seen[base], d:toISO(d), m:m, n:shown.slice(0,40),
+              a:Math.round(amt*100)/100, s:sourceName, x:ext.slice(0,24),
+              c: skip ? IGNORE : (state.rules[m]||"")});
+  });
+  return {txns:out, bad:bad};
+}
+function commitTxns(list){
+  var have={}, added=0, dup=0;
+  state.txns.forEach(function(t){ have[t.id]=true; });
+  list.forEach(function(t){ if(have[t.id]) dup++; else { state.txns.push(t); added++; } });
+  state.txns.sort(function(a,b){ return a.d<b.d?1:a.d>b.d?-1:0; });
+  return {added:added, dup:dup};
+}
+/* what kind of money a category represents */
+function catKind(c){
+  if(!c) return "none";
+  if(c===IGNORE) return "ignore";
+  for(var i=0;i<state.life.length;i++)
+    if(state.life[i].kind!=="save" && state.life[i].name===c) return "allowance";
+  if((state.catList||[]).indexOf(c)>=0) return "bill";
+  return "unplanned";
+}
+function txnCategoryOptions(){
+  var out=[], seen={};
+  function add(c){ if(c && !seen[c]){ seen[c]=true; out.push(c); } }
+  state.life.forEach(function(l){ if(l.kind!=="save") add(l.name); });
+  (state.catList||[]).forEach(add);
+  (state.txnCats||[]).forEach(add);
+  state.txns.forEach(function(t){ if(t.c && t.c!==IGNORE) add(t.c); });
+  return out;
+}
+function setTxnCategory(t,c){
+  t.c=c;
+  if(c && c!==IGNORE) state.rules[t.m]=c; else if(c===IGNORE) state.rules[t.m]=IGNORE;
+  /* teach the rest of this merchant's uncategorised rows */
+  state.txns.forEach(function(o){ if(o!==t && o.m===t.m && !o.c) o.c=c; });
+}
+
 /* ===================== UI atoms ===================== */
 function moneyInput(get,set,width){
   var w=el("div","mi"); if(width) w.style.width=width+"px";
@@ -1074,7 +1252,9 @@ var refresh=function(){};
 var openCats={};   /* per-device, not synced — collapsing on one phone shouldn't collapse the other */
 var openRows={};   /* same, for the timeline */
 var stub={};       /* scratch pad for the pay-stub calculator, not saved */
-var TABS=[["plan","Plan"],["totals","Totals"],["income","Income"],["bills","Bills"],
+var pending=null;  /* a statement that's been read but not yet imported */
+var spentMonth=null, showAllTx=false;
+var TABS=[["plan","Plan"],["totals","Totals"],["spent","Spent"],["income","Income"],["bills","Bills"],
           ["life","Life"],["debt","Debt"],["data","Data"]];
 
 function render(){
@@ -1084,7 +1264,7 @@ function render(){
     nav.appendChild(btn("tab"+(tab===t[0]?" on":""),t[1],function(){ tab=t[0]; render(); window.scrollTo(0,0); }));
   });
   var m=document.getElementById("main"); m.innerHTML=""; refresh=function(){};
-  ({plan:renderPlan,totals:renderTotals,income:renderIncome,bills:renderBills,
+  ({plan:renderPlan,totals:renderTotals,spent:renderSpent,income:renderIncome,bills:renderBills,
     life:renderLife,debt:renderDebt,data:renderData})[tab](m);
 }
 
@@ -1512,6 +1692,208 @@ function renderTotals(m){
   }
   c.appendChild(el("p","muted foot","Income is counted from the actual pay dates in the next twelve months, using the amounts you entered \u2014 so it's take-home, not salary, and it already includes every earner listed on the Income tab. Outgoings are twelve times a typical month. It won't match reality to the dollar: days worked move, and bills that vary move with them."));
   m.appendChild(c);
+}
+
+function monthLabel(key){
+  var p2=key.split("-"); return MONTHS[+p2[1]-1]+" "+p2[0];
+}
+function renderSpent(m){
+  var C={bills:cssVar("--bills"),debt:cssVar("--debt"),life:cssVar("--life"),
+         free:cssVar("--free"),short:cssVar("--short"),faint:cssVar("--ink-faint")};
+
+  /* ---------- import ---------- */
+  var imp=el("section","card");
+  imp.appendChild(el("h2",null,"Bring in a statement"));
+  var pick=document.createElement("input");
+  pick.type="file"; pick.accept=".csv,text/csv,text/comma-separated-values"; pick.style.display="none";
+  pick.addEventListener("change",safe(function(){
+    var file=pick.files&&pick.files[0]; if(!file) return;
+    var rd=new FileReader();
+    rd.onload=safe(function(){
+      var st=readStatement(rd.result);
+      if(st.error){ pending={error:st.error, header:st.header}; reRender(); return; }
+      var guess=/apple/i.test(file.name)?"Apple Card":st.source;
+      pending={st:st, source:guess, outPositive:st.outPositive, file:file.name};
+      reRender();
+    });
+    rd.readAsText(file); pick.value="";
+  }));
+  imp.appendChild(pick);
+
+  if(!pending){
+    imp.appendChild(el("p","muted","Export a month from your card or bank as a CSV and pick it here. Apple Card: Wallet \u2192 Apple Card \u2192 Card Balance \u2192 a statement \u2192 Export Transactions \u2192 CSV, then Save to Files."));
+    imp.appendChild(btn("action","Choose a CSV file",function(){ pick.click(); }));
+    imp.appendChild(el("p","muted foot","Importing the same file twice is safe \u2014 anything already here is skipped."));
+  } else if(pending.error){
+    imp.appendChild(el("div","alarm",pending.error+(pending.header?" Columns found: "+pending.header.join(", ")+".":"")));
+    imp.appendChild(btn("action","Try another file",function(){ pending=null; pick.click(); }));
+    imp.appendChild(btn("reset","Cancel",function(){ pending=null; reRender(); }));
+  } else {
+    var staged=stageTxns(pending.st, pending.source, pending.outPositive);
+    var list=staged.txns;
+    var have={}; state.txns.forEach(function(t){ have[t.id]=true; });
+    var fresh=list.filter(function(t){ return !have[t.id]; });
+    var ign=fresh.filter(function(t){ return t.c===IGNORE; }).length;
+    var known=fresh.filter(function(t){ return t.c && t.c!==IGNORE; }).length;
+    /* net of returns, so it matches what the report will show */
+    var outSum=fresh.filter(function(t){ return t.c!==IGNORE; })
+                    .reduce(function(a,t){ return a+t.a; },0);
+    var ds=list.map(function(t){ return t.d; }).sort();
+
+    imp.appendChild(el("p","muted","Read "+pending.file+". Check this looks right before anything is saved."));
+    var srcIn=document.createElement("input"); srcIn.className="text"; srcIn.value=pending.source;
+    srcIn.addEventListener("change",safe(function(){ pending.source=srcIn.value.trim()||"Statement"; reRender(); }));
+    imp.appendChild(row([el("label",null,"This is from"),srcIn]));
+    var h=pending.st.header, c=pending.st.cols;
+    var colDesc="Date: "+h[c.date]+" \u00b7 Description: "+h[c.merch>=0?c.merch:c.desc]
+      +" \u00b7 "+(c.amount>=0?"Amount: "+h[c.amount]:"Debit/credit: "+h[c.debit]+" / "+h[c.credit]);
+    imp.appendChild(el("p","muted foot",colDesc));
+    if(c.amount>=0){
+      var sg=document.createElement("select"); sg.className="sel";
+      [["pos","Purchases are positive"],["neg","Purchases are negative"]].forEach(function(o){
+        var op=document.createElement("option"); op.value=o[0]; op.textContent=o[1]; sg.appendChild(op);
+      });
+      sg.value=pending.outPositive?"pos":"neg";
+      sg.addEventListener("change",safe(function(){ pending.outPositive=(sg.value==="pos"); reRender(); }));
+      imp.appendChild(row([el("label",null,"Sign"),sg]));
+    }
+    imp.appendChild(lineRow(fresh.length+" new transactions", ds.length?fmtShort(fromISO(ds[0]))+" \u2013 "+fmtShort(fromISO(ds[ds.length-1])):"", money(outSum)));
+    imp.appendChild(lineRow("Skipped as transfers or payments","card payments, paychecks",String(ign)));
+    imp.appendChild(lineRow("Already categorised","from merchants you've sorted before",String(known)));
+    if(list.length-fresh.length) imp.appendChild(lineRow("Already imported","skipped",String(list.length-fresh.length)));
+    if(staged.bad) imp.appendChild(lineRow("Unreadable rows","no date or amount",String(staged.bad)));
+    if(outSum<0) imp.appendChild(el("div","alarm","More money in than out \u2014 the sign is probably backwards. Flip it above."));
+    imp.appendChild(btn("action","Import "+fresh.length+" transactions",function(){
+      var r=commitTxns(fresh);
+      pending=null;
+      var months=fresh.map(function(t){ return t.d.slice(0,7); }).sort();
+      if(months.length) spentMonth=months[months.length-1];
+      touched(); reRender();
+      setStatus("Imported "+r.added); setTimeout(idle,2500);
+    }));
+    imp.appendChild(btn("reset","Cancel",function(){ pending=null; reRender(); }));
+  }
+  m.appendChild(imp);
+
+  if(!state.txns.length) return;
+
+  /* ---------- month picker ---------- */
+  var months={}; state.txns.forEach(function(t){ months[t.d.slice(0,7)]=true; });
+  var keys=Object.keys(months).sort().reverse();
+  if(!spentMonth || !months[spentMonth]) spentMonth=keys[0];
+  var mp=el("div","month-pills");
+  keys.forEach(function(k){
+    var b2=el("button","pill"+(k===spentMonth?" on":""),monthLabel(k));
+    b2.addEventListener("click",safe(function(){ spentMonth=k; showAllTx=false; reRender(); }));
+    mp.appendChild(b2);
+  });
+  m.appendChild(mp);
+
+  var tx=state.txns.filter(function(t){ return t.d.slice(0,7)===spentMonth; });
+  var live=tx.filter(function(t){ return t.c!==IGNORE; });
+  var by={}, total=0;
+  live.forEach(function(t){ var k=t.c||""; by[k]=(by[k]||0)+t.a; total+=t.a; });
+  var sumKind=function(kind){ var v=0; for(var k in by) if(catKind(k)===kind) v+=by[k]; return v; };
+  var allow=sumKind("allowance"), bills=sumKind("bill"), unplanned=sumKind("unplanned"), unsorted=by[""]||0;
+
+  /* ---------- the answer ---------- */
+  var sum=el("section","card");
+  sum.appendChild(el("h2",null,"Where "+monthLabel(spentMonth)+" went"));
+  var big=el("div","hero-amt",money(total)); sum.appendChild(big);
+  sum.appendChild(el("div","hero-note","spent across "+live.length+" transactions, transfers left out"));
+  var bar=el("div","bar"); bar.style.marginTop="14px";
+  [[bills,C.bills],[allow,C.life],[unplanned,C.short],[unsorted,C.faint]].forEach(function(x){
+    if(x[0]<=0) return;
+    var sgm=el("div","bar-seg"); sgm.style.width=(x[0]/Math.max(total,1)*100)+"%"; sgm.style.background=x[1];
+    bar.appendChild(sgm);
+  });
+  sum.appendChild(bar);
+  sum.appendChild(lineRow("Bills","already planned",money(bills),C.bills));
+  sum.appendChild(lineRow("Spending money","groceries, gas \u2014 planned",money(allow),C.life));
+  sum.appendChild(lineRow("Not in the plan","this is your unassigned money",money(unplanned),C.short));
+  if(unsorted) sum.appendChild(lineRow("Not sorted yet","needs a category below",money(unsorted),C.faint));
+  var t2=totals(), incM=0; state.incomes.forEach(function(x){ incM+=monthlyIncome(x); });
+  var unassigned=incM-(t2.bills+t2.debtMin+num(state.extraDebtMonthly)+t2.spend+t2.save);
+  if(unassigned>0 && (unplanned+unsorted)>0){
+    var share=Math.round((unplanned+unsorted)/unassigned*100);
+    sum.appendChild(el("p","muted foot","A typical month leaves "+money0(unassigned)+" unassigned. "
+      +money0(unplanned+unsorted)+" of it \u2014 "+share+"% \u2014 went to things outside the plan this month."));
+  }
+  m.appendChild(sum);
+
+  /* ---------- the unplanned, ranked ---------- */
+  var un=[]; for(var k in by) if(catKind(k)==="unplanned") un.push([k,by[k]]);
+  un.sort(function(a,b){ return b[1]-a[1]; });
+  if(un.length){
+    var uc=el("section","card");
+    uc.appendChild(el("h2",null,"Where the unassigned money went"));
+    un.forEach(function(x){
+      var n2=live.filter(function(t){ return t.c===x[0]; }).length;
+      uc.appendChild(lineRow(x[0], n2+(n2===1?" purchase":" purchases"), money(x[1]), C.short));
+    });
+    m.appendChild(uc);
+  }
+
+  /* ---------- allowances against the plan ---------- */
+  var al=state.life.filter(function(l){ return l.kind!=="save" && num(l.monthly)>0; });
+  if(al.length){
+    var ac=el("section","card");
+    ac.appendChild(el("h2",null,"Spending money against the plan"));
+    al.forEach(function(l){
+      var got=by[l.name]||0, diff=got-num(l.monthly);
+      ac.appendChild(lineRow(l.name, money0(num(l.monthly))+" planned",
+        money(got), diff>0.5?C.short:C.free));
+    });
+    ac.appendChild(el("p","muted foot","Red means over for the month. A category only fills once its purchases are sorted into it."));
+    m.appendChild(ac);
+  }
+
+  /* ---------- sort the stragglers ---------- */
+  var needs=tx.filter(function(t){ return !t.c; });
+  var bucket=el("section","card");
+  bucket.appendChild(el("h2",null, needs.length ? needs.length+" still need a category" : "Every purchase this month"));
+  if(needs.length) bucket.appendChild(el("p","muted","Sort one and every other purchase from the same shop follows, now and in future imports."));
+  var shown = needs.length && !showAllTx ? needs : tx;
+  shown.forEach(function(t){ bucket.appendChild(txnRow(t)); });
+  if(needs.length){
+    bucket.appendChild(btn("add", showAllTx?"Show only the unsorted":"Show all "+tx.length+" transactions",function(){
+      showAllTx=!showAllTx; reRender();
+    }));
+  }
+  m.appendChild(bucket);
+}
+function txnRow(t){
+  var r=el("div","txn"+(t.c===IGNORE?" ignored":""));
+  var top=el("div","txn-top");
+  top.appendChild(el("span","txn-date",fmtShort(fromISO(t.d))));
+  top.appendChild(el("span","txn-name",t.n||t.m));
+  var amt=el("span","txn-amt",(t.a<0?"\u2212":"")+money(Math.abs(t.a)));
+  if(t.a<0) amt.style.color=cssVar("--free");
+  top.appendChild(amt);
+  r.appendChild(top);
+  var sel=document.createElement("select"); sel.className="sel";
+  var opts=[["","Needs a category"]];
+  txnCategoryOptions().forEach(function(c){ opts.push([c,c]); });
+  opts.push([IGNORE,"Ignore \u2014 transfer or payment"]);
+  opts.push(["__new__","New category\u2026"]);
+  opts.forEach(function(o){ var op=document.createElement("option"); op.value=o[0]; op.textContent=o[1]; sel.appendChild(op); });
+  sel.value=t.c||"";
+  sel.addEventListener("change",safe(function(){
+    var v=sel.value;
+    if(v==="__new__"){
+      var name=(prompt("Name for the new category? (e.g. Amazon, Clothes, Household)")||"").trim();
+      if(!name){ sel.value=t.c||""; return; }
+      if(state.txnCats.indexOf(name)<0) state.txnCats.push(name);
+      v=name;
+    }
+    setTxnCategory(t,v); touched(); reRender();
+  }));
+  var sub3=el("div","txn-sub");
+  sub3.appendChild(sel);
+  var meta=el("span","txn-meta",t.s+(t.x?" \u00b7 "+t.x:""));
+  sub3.appendChild(meta);
+  r.appendChild(sub3);
+  return r;
 }
 
 function renderIncome(m){
