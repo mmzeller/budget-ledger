@@ -153,6 +153,24 @@ select.sel, input.date { flex:1; font-size:15px; }
   background:var(--surface); border:1px solid var(--rule); color:var(--ink-soft);
   border-radius:999px; padding:7px 13px; cursor:pointer; }
 .pill.on { background:var(--ink); border-color:var(--ink); color:var(--paper); }
+.tapline { cursor:pointer; }
+.tapline:active { background:var(--track); }
+.trend { padding:10px 0; border-bottom:1px solid var(--rule); }
+.trend:last-of-type { border-bottom:none; }
+.trend-top { display:flex; align-items:baseline; gap:10px; }
+.trend-name { flex:1; min-width:0; font-size:14px; font-weight:600; overflow-wrap:anywhere; }
+.trend-avg { font-size:12px; color:var(--ink-soft); white-space:nowrap; }
+.spark { display:flex; gap:6px; align-items:flex-end; margin-top:8px; }
+.spark-col { flex:1; display:flex; flex-direction:column; align-items:center; gap:3px; }
+.spark-bar { width:100%; border-radius:2px 2px 0 0; min-height:2px; }
+.spark-lab { font-size:9px; color:var(--ink-faint); }
+.sugg { padding:11px 0; border-bottom:1px solid var(--rule); }
+.sugg:last-of-type { border-bottom:none; }
+.sugg-top { display:flex; align-items:baseline; gap:10px; }
+.sugg-name { flex:1; min-width:0; font-size:15px; font-weight:600; overflow-wrap:anywhere; }
+.sugg-fig { font-size:15px; font-weight:600; white-space:nowrap; }
+.sugg-note { font-size:12px; color:var(--ink-soft); margin-top:3px; }
+.sugg-ok { font-size:12px; color:var(--free); font-weight:500; }
 .txn { padding:10px 0; border-bottom:1px solid var(--rule); }
 .txn:last-of-type { border-bottom:none; }
 .txn.ignored .txn-name, .txn.ignored .txn-amt { color:var(--ink-faint); text-decoration:line-through; }
@@ -305,7 +323,7 @@ window.FIREBASE_CONFIG = {
 (function () {
 "use strict";
 
-var BUILD = "2026-09-21a";
+var BUILD = "2026-09-21c";
 var LS = "paycheck-ledger-v2";
 var HORIZON_DAYS = 120;
 var PER_CHECK = 12 / 26;
@@ -381,6 +399,7 @@ function normalize(raw){
     debts:Array.isArray(raw.debts)?raw.debts:s.debts,
     life:Array.isArray(raw.life)?raw.life:s.life,
     extraDebtMonthly:num(raw.extraDebtMonthly),
+    meta:(raw.meta&&typeof raw.meta==="object")?raw.meta:null,
     strategy:(raw.strategy==="snowball"||raw.strategy==="manual")?raw.strategy:"avalanche"
   };
   [o.incomes,o.bills,o.debts,o.life].forEach(function(arr){ arr.forEach(function(x){ if(!x.id) x.id=uid(); }); });
@@ -509,6 +528,15 @@ function historyStats(billId){
   return {list:h, n:h.length, avg:total/h.length, hi:hi, lo:lo};
 }
 
+/* a savings goal: what you started with, plus everything set aside, less withdrawals */
+function goalBalance(l){
+  var sum=num(l.saved), pre=l.id+"_";
+  for(var k in state.aside) if(k.indexOf(pre)===0) sum+=num(state.aside[k]);
+  return sum;
+}
+function withdrawFromGoal(l,amt){
+  state.aside[l.id+"_w"+Date.now()] = -Math.abs(num(amt));
+}
 /* a sinking pot's balance: every set-aside ticked, less every payment made */
 function potBalance(billId){
   var inSum=0, outSum=0, k;
@@ -580,6 +608,14 @@ function makePeriod(start,end,index,mr,zeroRates){
       hits.push({id:b.id,key:key,name:b.name,date:d,amount:num(b.amount),varies:!!b.varies,
                  paid:state.paid[key]!==undefined,actual:num(state.paid[key])});
     });
+  });
+  /* savings goals get the same per-check tick; they're already counted in
+     rates.save, so they add nothing to the committed total here */
+  state.life.forEach(function(l){
+    if(l.kind!=="save" || num(l.monthly)<=0) return;
+    var gk=l.id+"_"+toISO(start);
+    asideItems.push({id:l.id,key:gk,name:l.name,planned:num(l.monthly)*f,goal:true,
+                     set:state.aside[gk]!==undefined,actual:num(state.aside[gk])});
   });
   hits.sort(function(a,b){return a.date-b.date;});
   var billTotal=hits.reduce(function(s,b){return s+b.amount;},0);
@@ -808,6 +844,7 @@ function flush(){
   if(!docRef){ idle(); return; }
   if(writing){ pendingWrite=true; return; }
   writing=true;
+  state.meta={by:(cloud&&cloud.email)||"this device", at:new Date().toISOString()};
   docRef.set(JSON.parse(JSON.stringify(state))).then(function(){
     store="db"; idle(); writing=false;
     if(pendingWrite){ pendingWrite=false; flush(); }
@@ -820,6 +857,7 @@ function initStorage(){
   if(lsOK){
     store="local";
     try{ var raw=localStorage.getItem(LS); if(raw) state=normalize(JSON.parse(raw)); }catch(e){}
+    syncPaidFromTxns();
   }
   var cfg=window.FIREBASE_CONFIG;
   if(cfg && cfg.projectId){ gate="loading"; render(); return; }
@@ -834,7 +872,7 @@ function initStorage(){
       docRef=ref; store="db";
       if(snap && snap.exists){
         var r=snap.data();
-        if(r && Object.keys(r).length){ state=normalize(r); cacheLocal(); render(); }
+        if(r && Object.keys(r).length){ state=normalize(r); syncPaidFromTxns(); cacheLocal(); render(); }
         idle();
       } else flush();
     });
@@ -925,6 +963,45 @@ function doExport(){
   }).catch(function(){
     setStatus("Excel export needs a connection",true); setTimeout(idle,3000);
   });
+}
+function icsEscape(t){ return String(t||"").replace(/([,;\\])/g,"\\$1").replace(/\n/g," "); }
+function buildICS(){
+  var stamp=new Date().toISOString().replace(/[-:]/g,"").split(".")[0]+"Z";
+  var L=["BEGIN:VCALENDAR","VERSION:2.0","PRODID:-//Paycheck ledger//EN","CALSCALE:GREGORIAN",
+         "X-WR-CALNAME:Paycheck ledger"];
+  var n=0;
+  function ev(date,title,note){
+    var d1=toISO(date).replace(/-/g,""), d2=toISO(addDays(date,1)).replace(/-/g,"");
+    L.push("BEGIN:VEVENT","UID:pl"+(n++)+"-"+d1+"@paycheck-ledger","DTSTAMP:"+stamp,
+      "DTSTART;VALUE=DATE:"+d1,"DTEND;VALUE=DATE:"+d2,"SUMMARY:"+icsEscape(title));
+    if(note) L.push("DESCRIPTION:"+icsEscape(note));
+    /* 15 hours before midnight = 9am the day before */
+    L.push("BEGIN:VALARM","ACTION:DISPLAY","TRIGGER:-PT15H","DESCRIPTION:"+icsEscape(title),
+           "END:VALARM","END:VEVENT");
+  }
+  buildPeriods().forEach(function(p2){
+    if(p2.partial) return;
+    p2.sources.forEach(function(src){
+      var inc=state.incomes.filter(function(x){ return x.id===src.incomeId; })[0];
+      ev(src.date,"Payday \u00b7 "+(inc?inc.name:"Income")+" "+money0(src.amount),
+         "Covers "+fmtShort(p2.start)+" to "+fmtShort(addDays(p2.end,-1))
+         +". Left after commitments: "+money0(p2.free)+".");
+    });
+    p2.bills.forEach(function(b){ ev(b.date,"Bill due \u00b7 "+b.name+" "+money0(b.amount)); });
+  });
+  bigBillsAhead(6).forEach(function(x){
+    ev(addDays(x.date,-14),"Two weeks out \u00b7 "+x.name+" "+money0(x.amount),
+       x.spread?"Being set aside a little each check.":"Comes out of one check.");
+  });
+  L.push("END:VCALENDAR");
+  return L.join("\r\n");
+}
+function doCalendar(){
+  var ics=buildICS();
+  if((ics.match(/BEGIN:VEVENT/g)||[]).length===0){
+    setStatus("Nothing to put in a calendar yet",true); setTimeout(idle,3000); return;
+  }
+  saveFile("paycheck-ledger.ics", ics, "text/calendar");
 }
 function doBackup(){
   saveFile("ledger-backup-"+toISO(new Date())+".json", JSON.stringify(state,null,2), "application/json");
@@ -1036,8 +1113,9 @@ function readStatement(text){
   return {header:header, body:body, cols:cols, outPositive:outPositive,
           source: isCard ? "Apple Card" : "Checking"};
 }
-function stageTxns(st, sourceName, outPositive){
+function stageTxns(st, sourceName, outPositive, batchId){
   var out=[], seen={}, bad=0;
+  batchId = batchId || "b"+Date.now();
   st.body.forEach(function(rw){
     var d=parseDateLoose(rw[st.cols.date]);
     var amt;
@@ -1060,7 +1138,7 @@ function stageTxns(st, sourceName, outPositive){
     var base=toISO(d)+"|"+amt.toFixed(2)+"|"+m+"|"+sourceName;
     seen[base]=(seen[base]||0)+1;
     out.push({id:base+"#"+seen[base], d:toISO(d), m:m, n:shown.slice(0,40),
-              a:Math.round(amt*100)/100, s:sourceName, x:ext.slice(0,24),
+              a:Math.round(amt*100)/100, s:sourceName, x:ext.slice(0,24), b:batchId,
               c: skip ? IGNORE : (state.rules[m]||"")});
   });
   return {txns:out, bad:bad};
@@ -1072,19 +1150,57 @@ function commitTxns(list){
   state.txns.sort(function(a,b){ return a.d<b.d?1:a.d>b.d?-1:0; });
   return {added:added, dup:dup};
 }
+/* imports, newest first, so one can be taken back out */
+function importBatches(){
+  var acc={};
+  state.txns.forEach(function(t){
+    var k=t.b||"legacy";
+    if(!acc[k]) acc[k]={id:k,n:0,sum:0,src:t.s,lo:t.d,hi:t.d};
+    acc[k].n++; if(t.c!==IGNORE) acc[k].sum+=num(t.a);
+    if(t.d<acc[k].lo) acc[k].lo=t.d;
+    if(t.d>acc[k].hi) acc[k].hi=t.d;
+  });
+  var out=[]; for(var k2 in acc) out.push(acc[k2]);
+  out.sort(function(a,b){ return a.id<b.id?1:-1; });
+  return out;
+}
 /* what kind of money a category represents */
+function billByName(n){
+  for(var i=0;i<state.bills.length;i++) if(state.bills[i].name===n) return state.bills[i];
+  return null;
+}
 function catKind(c){
   if(!c) return "none";
   if(c===IGNORE) return "ignore";
   for(var i=0;i<state.life.length;i++)
     if(state.life[i].kind!=="save" && state.life[i].name===c) return "allowance";
+  if(billByName(c)) return "bill";
   if((state.catList||[]).indexOf(c)>=0) return "bill";
   return "unplanned";
+}
+/* a transaction filed against a bill can tick that bill paid, with the real amount */
+function syncPaidFromTxns(){
+  var n=0;
+  state.txns.forEach(function(t){
+    if(!t.c || t.c===IGNORE || num(t.a)<=0) return;
+    var b=billByName(t.c); if(!b) return;
+    var d=fromISO(t.d); if(!d) return;
+    var best=null, bestGap=1e15;
+    billOccurrences(b,addDays(d,-18),addDays(d,18)).forEach(function(o){
+      var gap=Math.abs(o-d);
+      if(gap<bestGap){ bestGap=gap; best=o; }
+    });
+    if(!best || bestGap>12*86400000) return;      /* no occurrence close enough */
+    var key=b.id+"_"+toISO(best);
+    if(state.paid[key]===undefined){ state.paid[key]=num(t.a); n++; }
+  });
+  return n;
 }
 function txnCategoryOptions(){
   var out=[], seen={};
   function add(c){ if(c && !seen[c]){ seen[c]=true; out.push(c); } }
   state.life.forEach(function(l){ if(l.kind!=="save") add(l.name); });
+  state.bills.forEach(function(b){ add(b.name); });
   (state.catList||[]).forEach(add);
   (state.txnCats||[]).forEach(add);
   state.txns.forEach(function(t){ if(t.c && t.c!==IGNORE) add(t.c); });
@@ -1095,6 +1211,28 @@ function setTxnCategory(t,c){
   if(c && c!==IGNORE) state.rules[t.m]=c; else if(c===IGNORE) state.rules[t.m]=IGNORE;
   /* teach the rest of this merchant's uncategorised rows */
   state.txns.forEach(function(o){ if(o!==t && o.m===t.m && !o.c) o.c=c; });
+  syncPaidFromTxns();
+}
+function trendData(){
+  var months=completeMonths().slice(-6);
+  if(months.length<2) return null;
+  var inSet={}; months.forEach(function(k){ inSet[k]=true; });
+  var acc={};
+  state.txns.forEach(function(t){
+    if(!t.c||t.c===IGNORE) return;
+    var k=t.d.slice(0,7); if(!inSet[k]) return;
+    if(!acc[t.c]) acc[t.c]={};
+    acc[t.c][k]=(acc[t.c][k]||0)+t.a;
+  });
+  var out=[];
+  for(var c in acc){
+    var vals=months.map(function(k){ return acc[c][k]||0; });
+    var tot=0, mx=0;
+    vals.forEach(function(v){ tot+=v; if(v>mx) mx=v; });
+    out.push({cat:c, vals:vals, avg:tot/months.length, max:mx, kind:catKind(c)});
+  }
+  out.sort(function(a,b){ return b.avg-a.avg; });
+  return {months:months, list:out};
 }
 
 /* ===================== UI atoms ===================== */
@@ -1207,7 +1345,7 @@ window.Ledger={
   /* a change from the other phone — never stomp on a field being typed in */
   applyRemote:function(obj){
     if(isEditing()){ remotePending=obj; return; }
-    state=normalize(obj); cacheLocal(); render();
+    state=normalize(obj); syncPaidFromTxns(); cacheLocal(); render();
   },
   attach:function(c){ cloud=c; gate=null; store="cloud"; render(); idle(); },
   detach:function(){ cloud=null; store=lsOK?"local":"none"; },
@@ -1253,7 +1391,7 @@ var openCats={};   /* per-device, not synced — collapsing on one phone shouldn
 var openRows={};   /* same, for the timeline */
 var stub={};       /* scratch pad for the pay-stub calculator, not saved */
 var pending=null;  /* a statement that's been read but not yet imported */
-var spentMonth=null, showAllTx=false;
+var spentMonth=null, showAllTx=false, spentFilter=null;
 var TABS=[["plan","Plan"],["totals","Totals"],["spent","Spent"],["income","Income"],["bills","Bills"],
           ["life","Life"],["debt","Debt"],["data","Data"]];
 
@@ -1579,7 +1717,8 @@ function renderPlan(m){
     restBody.innerHTML="";
     restBody.appendChild(lineRow("Debt payments","spread evenly",money(n.debt)));
     restBody.appendChild(lineRow("Spending money","groceries, gas, fun",money(n.spend)));
-    restBody.appendChild(lineRow("Into savings pots","your savings goals",money(n.save)));
+    if(!n.asideItems.some(function(a){ return a.goal; }))
+      restBody.appendChild(lineRow("Into savings pots","your savings goals",money(n.save)));
     restBody.appendChild(lineRow(n.free>=0?"Unassigned":"Short","",money(n.free),n.free>=0?C.free:C.short,true));
     ps.forEach(function(p,i){
       if(!outCells[i]) return;
@@ -1694,6 +1833,45 @@ function renderTotals(m){
   m.appendChild(c);
 }
 
+/* months with imported data, excluding the one we're still living through —
+   a half-imported month would drag every average down */
+function completeMonths(){
+  var n0=new Date(), cur=n0.getFullYear()+"-"+pad2(n0.getMonth()+1);
+  var seen={}, out=[];
+  state.txns.forEach(function(t){ var k=t.d.slice(0,7); if(k!==cur) seen[k]=true; });
+  for(var k in seen) out.push(k);
+  return out.sort();
+}
+/* what each category has actually cost per month, over those months */
+function categoryAverages(){
+  var months=completeMonths();
+  if(!months.length) return null;
+  var inSet={}; months.forEach(function(k){ inSet[k]=true; });
+  var acc={};
+  state.txns.forEach(function(t){
+    if(!t.c || t.c===IGNORE) return;
+    var k=t.d.slice(0,7); if(!inSet[k]) return;
+    if(!acc[t.c]) acc[t.c]={vals:{}};
+    acc[t.c].vals[k]=(acc[t.c].vals[k]||0)+t.a;
+  });
+  var out=[];
+  for(var c in acc){
+    var total=0, hi=0, seenN=0;
+    for(var k2 in acc[c].vals){
+      var v=acc[c].vals[k2]; total+=v; seenN++; if(v>hi) hi=v;
+    }
+    /* divide by every complete month, not just the ones it appeared in */
+    out.push({cat:c, avg:total/months.length, hi:hi, seen:seenN, kind:catKind(c)});
+  }
+  out.sort(function(a,b){ return b.avg-a.avg; });
+  return {months:months, list:out};
+}
+function plannedFor(cat){
+  for(var i=0;i<state.life.length;i++)
+    if(state.life[i].kind!=="save" && state.life[i].name===cat) return state.life[i];
+  return null;
+}
+
 function monthLabel(key){
   var p2=key.split("-"); return MONTHS[+p2[1]-1]+" "+p2[0];
 }
@@ -1765,11 +1943,12 @@ function renderSpent(m){
     if(outSum<0) imp.appendChild(el("div","alarm","More money in than out \u2014 the sign is probably backwards. Flip it above."));
     imp.appendChild(btn("action","Import "+fresh.length+" transactions",function(){
       var r=commitTxns(fresh);
+      var ticked=syncPaidFromTxns();
       pending=null;
       var months=fresh.map(function(t){ return t.d.slice(0,7); }).sort();
       if(months.length) spentMonth=months[months.length-1];
       touched(); reRender();
-      setStatus("Imported "+r.added); setTimeout(idle,2500);
+      setStatus("Imported "+r.added+(ticked?", "+ticked+" bills ticked":"")); setTimeout(idle,3200);
     }));
     imp.appendChild(btn("reset","Cancel",function(){ pending=null; reRender(); }));
   }
@@ -1829,9 +2008,83 @@ function renderSpent(m){
     uc.appendChild(el("h2",null,"Where the unassigned money went"));
     un.forEach(function(x){
       var n2=live.filter(function(t){ return t.c===x[0]; }).length;
-      uc.appendChild(lineRow(x[0], n2+(n2===1?" purchase":" purchases"), money(x[1]), C.short));
+      var rw=lineRow(x[0], n2+(n2===1?" purchase":" purchases"), money(x[1]), C.short);
+      rw.className+=" tapline";
+      rw.addEventListener("click",safe(function(){
+        spentFilter = spentFilter===x[0] ? null : x[0];
+        showAllTx=true; reRender();
+      }));
+      uc.appendChild(rw);
     });
+    uc.appendChild(el("p","muted foot","Tap one to see the purchases behind it."));
     m.appendChild(uc);
+  }
+
+  /* ---------- turn what you found into a plan ---------- */
+  var ca=categoryAverages();
+  if(ca){
+    var sugg=ca.list.filter(function(x){ return x.kind==="unplanned"||x.kind==="allowance"; })
+                    .filter(function(x){ return x.avg>=1; });
+    if(sugg.length){
+      var pc=el("section","card");
+      pc.appendChild(el("h2",null,"Make this part of the plan"));
+      var mnames=ca.months.map(monthLabel).join(", ");
+      pc.appendChild(el("p","muted", ca.months.length===1
+        ? "Based on one complete month ("+mnames+"). Worth a second statement before you budget from it \u2014 one month is an anecdote."
+        : "Averaged over "+ca.months.length+" complete months ("+mnames+"). The current month is left out because it's only part-imported."));
+
+      var extra=0;
+      sugg.forEach(function(x){
+        var plan=plannedFor(x.cat), want=Math.round(x.avg);
+        var cur=plan?num(plan.monthly):0;
+        if(want>cur) extra+=want-cur;
+        var wrap=el("div","sugg");
+        var top=el("div","sugg-top");
+        top.appendChild(el("span","sugg-name",x.cat));
+        var fig=el("span","sugg-fig",money0(x.avg)+" a month");
+        top.appendChild(fig);
+        wrap.appendChild(top);
+        var note=el("div","sugg-note");
+        if(!plan) note.textContent="Not in the plan \u00b7 seen in "+x.seen+" of "+ca.months.length
+          +(ca.months.length===1?" month":" months")+" \u00b7 worst "+money0(x.hi);
+        else if(Math.abs(x.avg-cur)<1) note.textContent="Planned "+money0(cur)+" \u00b7 matching what you spend";
+        else note.textContent="Planned "+money0(cur)+" \u00b7 "
+          +(x.avg>cur?"running "+money0(x.avg-cur)+" over":"running "+money0(cur-x.avg)+" under");
+        wrap.appendChild(note);
+        var acts=el("div","varies-btns");
+        if(!plan){
+          acts.appendChild(btn("mini","Add at "+money0(want),function(){
+            state.life.push({id:uid(),name:x.cat,kind:"spend",monthly:want});
+            touched(); reRender();
+          }));
+          if(Math.round(x.hi)>want) acts.appendChild(btn("mini","Add at worst month "+money0(x.hi),function(){
+            state.life.push({id:uid(),name:x.cat,kind:"spend",monthly:Math.round(x.hi)});
+            touched(); reRender();
+          }));
+        } else if(Math.abs(want-cur)>=1){
+          acts.appendChild(btn("mini",(want>cur?"Raise to ":"Lower to ")+money0(want),function(){
+            plan.monthly=want; touched(); reRender();
+          }));
+        } else {
+          acts.appendChild(el("span","sugg-ok","Planned about right."));
+        }
+        wrap.appendChild(acts);
+        pc.appendChild(wrap);
+      });
+
+      if(extra>0){
+        var incM2=0; state.incomes.forEach(function(x){ incM2+=monthlyIncome(x); });
+        var t3=totals();
+        var un=incM2-(t3.bills+t3.debtMin+num(state.extraDebtMonthly)+t3.spend+t3.save);
+        var after=un-extra;
+        var warn=el("p","muted foot");
+        warn.textContent="Taking every suggestion commits "+money0(extra)+" more a month, moving your unassigned money from "
+          +money0(un)+" to "+money0(after)+". That isn't money disappearing \u2014 it already left. The plan would just stop pretending otherwise.";
+        if(after<0) warn.textContent+=" That would put you under water on paper, which means some of this spending has to come down rather than be budgeted for.";
+        pc.appendChild(warn);
+      }
+      m.appendChild(pc);
+    }
   }
 
   /* ---------- allowances against the plan ---------- */
@@ -1849,11 +2102,47 @@ function renderSpent(m){
   }
 
   /* ---------- sort the stragglers ---------- */
+  var td=trendData();
+  if(td && td.list.length){
+    var tc=el("section","card");
+    tc.appendChild(el("h2",null,"Month by month"));
+    tc.appendChild(el("p","muted","The last "+td.months.length+" complete months. A steady bar is a habit you can budget; a spiky one isn't."));
+    td.list.slice(0,8).forEach(function(x){
+      var w2=el("div","trend");
+      var top=el("div","trend-top");
+      top.appendChild(el("span","trend-name",x.cat));
+      top.appendChild(el("span","trend-avg",money0(x.avg)+" avg"));
+      w2.appendChild(top);
+      var sp=el("div","spark");
+      x.vals.forEach(function(v,i){
+        var col=el("div","spark-col");
+        var b3=el("div","spark-bar");
+        b3.style.height=Math.max(2,x.max>0?(v/x.max)*34:2)+"px";
+        b3.style.background=v>0?C[x.kind==="unplanned"?"short":x.kind==="bill"?"bills":"life"]:cssVar("--track");
+        b3.title=monthLabel(td.months[i])+": "+money(v);
+        col.appendChild(b3);
+        col.appendChild(el("span","spark-lab",MONTHS[+td.months[i].split("-")[1]-1].slice(0,3)));
+        sp.appendChild(col);
+      });
+      w2.appendChild(sp);
+      tc.appendChild(w2);
+    });
+    m.appendChild(tc);
+  }
+
   var needs=tx.filter(function(t){ return !t.c; });
   var bucket=el("section","card");
   bucket.appendChild(el("h2",null, needs.length ? needs.length+" still need a category" : "Every purchase this month"));
   if(needs.length) bucket.appendChild(el("p","muted","Sort one and every other purchase from the same shop follows, now and in future imports."));
   var shown = needs.length && !showAllTx ? needs : tx;
+  if(spentFilter){
+    shown = tx.filter(function(t){ return t.c===spentFilter; });
+    var chip=el("div","varies-btns");
+    chip.appendChild(btn("mini","Showing "+spentFilter+" \u2014 tap to clear",function(){
+      spentFilter=null; reRender();
+    }));
+    bucket.appendChild(chip);
+  }
   shown.forEach(function(t){ bucket.appendChild(txnRow(t)); });
   if(needs.length){
     bucket.appendChild(btn("add", showAllTx?"Show only the unsorted":"Show all "+tx.length+" transactions",function(){
@@ -1861,6 +2150,60 @@ function renderSpent(m){
     }));
   }
   m.appendChild(bucket);
+
+  /* ---------- imports and rules ---------- */
+  var bats=importBatches();
+  if(bats.length){
+    var bc=el("section","card");
+    bc.appendChild(el("h2",null,"Imports"));
+    bats.slice(0,8).forEach(function(b4){
+      var rw2=el("div","srow");
+      var t4=el("div","srow-top");
+      t4.appendChild(el("span","sugg-name",b4.src+" \u00b7 "+b4.n+" rows"));
+      var x4=el("button","cat-del","Remove");
+      x4.addEventListener("click",safe(function(){
+        if(!confirm("Remove these "+b4.n+" transactions? Categories you've taught it are kept.")) return;
+        state.txns=state.txns.filter(function(t5){ return (t5.b||"legacy")!==b4.id; });
+        touched(); reRender();
+      }));
+      t4.appendChild(x4);
+      rw2.appendChild(t4);
+      rw2.appendChild(el("div","sugg-note",fmtShort(fromISO(b4.lo))+" \u2013 "+fmtShort(fromISO(b4.hi))+" \u00b7 "+money(b4.sum)));
+      bc.appendChild(rw2);
+    });
+    m.appendChild(bc);
+  }
+
+  var rk=Object.keys(state.rules||{});
+  if(rk.length){
+    var rc=el("section","card");
+    rc.appendChild(el("h2",null,"What goes where"));
+    rc.appendChild(el("p","muted","Shops you've sorted. Future imports follow these automatically."));
+    rk.sort().forEach(function(mk){
+      var rw3=el("div","srow");
+      var t6=el("div","srow-top");
+      t6.appendChild(el("span","sugg-name",mk));
+      var x6=el("button","del","\u00d7"); x6.setAttribute("aria-label","Forget this rule");
+      x6.addEventListener("click",safe(function(){ delete state.rules[mk]; touched(); reRender(); }));
+      t6.appendChild(x6);
+      rw3.appendChild(t6);
+      var sel2=document.createElement("select"); sel2.className="sel";
+      var o2=[[IGNORE,"Ignore \u2014 transfer or payment"]];
+      txnCategoryOptions().forEach(function(c){ o2.unshift([c,c]); });
+      o2.forEach(function(o){ var op=document.createElement("option"); op.value=o[0]; op.textContent=o[1]; sel2.appendChild(op); });
+      sel2.value=state.rules[mk];
+      sel2.addEventListener("change",safe(function(){
+        state.rules[mk]=sel2.value;
+        state.txns.forEach(function(t7){ if(t7.m===mk) t7.c=sel2.value; });
+        syncPaidFromTxns(); touched(); reRender();
+      }));
+      var f6=el("div","srow-fields"); var g6=el("div","sfield");
+      g6.appendChild(el("span","sflabel","Files as")); g6.appendChild(sel2);
+      f6.appendChild(g6); rw3.appendChild(f6);
+      rc.appendChild(rw3);
+    });
+    m.appendChild(rc);
+  }
 }
 function txnRow(t){
   var r=el("div","txn"+(t.c===IGNORE?" ignored":""));
@@ -1870,6 +2213,12 @@ function txnRow(t){
   var amt=el("span","txn-amt",(t.a<0?"\u2212":"")+money(Math.abs(t.a)));
   if(t.a<0) amt.style.color=cssVar("--free");
   top.appendChild(amt);
+  var del=el("button","del","\u00d7"); del.setAttribute("aria-label","Delete this transaction");
+  del.addEventListener("click",safe(function(){
+    state.txns=state.txns.filter(function(o){ return o!==t; });
+    touched(); reRender();
+  }));
+  top.appendChild(del);
   r.appendChild(top);
   var sel=document.createElement("select"); sel.className="sel";
   var opts=[["","Needs a category"]];
@@ -2290,12 +2639,18 @@ function renderLife(m){
       [{label:"Per month",control:moneyInput(function(){return num(l.monthly);},function(v){l.monthly=v;},120)},
        {label:"Per 2 weeks",control:per},
        {label:"Goal",control:moneyInput(function(){return num(l.target);},function(v){l.target=v;},120)},
-       {label:"Saved so far",control:moneyInput(function(){return num(l.saved);},function(v){l.saved=v;},120)}],
+       {label:"Starting balance",control:moneyInput(function(){return num(l.saved);},function(v){l.saved=v;},120)}],
       function(){ state.life=state.life.filter(function(x){return x.id!==l.id;}); touched(); render(); },
       {canUp:pi2>0, canDown:pi2<potItems.length-1,
        up:moveHandler("life",l.id,-1,isSave), down:moveHandler("life",l.id,1,isSave)});
     var prog=el("div","prog"), fill=el("div","prog-fill"), note=el("div","pot-note");
     prog.appendChild(fill); wrap.appendChild(prog); wrap.appendChild(note);
+    var acts=el("div","varies-btns");
+    acts.appendChild(btn("mini","Record a withdrawal",function(){
+      var a=num(prompt("How much came out of "+l.name+"?")||0);
+      if(a>0){ withdrawFromGoal(l,a); touched(); reRender(); }
+    }));
+    wrap.appendChild(acts);
     card.appendChild(wrap);
     pots.push({item:l,per:per,prog:prog,fill:fill,note:note});
   });
@@ -2308,13 +2663,13 @@ function renderLife(m){
     pots.forEach(function(p){
       var l=p.item, perCheck=num(l.monthly)*PER_CHECK;
       p.per.textContent=money0(perCheck);
-      var target=num(l.target), saved=num(l.saved), remaining=Math.max(0,target-saved);
+      var target=num(l.target), saved=goalBalance(l), remaining=Math.max(0,target-saved);
       if(target>0){
         p.prog.style.display=""; p.note.style.display="";
         p.fill.style.width=Math.min(100,(saved/target)*100)+"%";
-        if(remaining<=0) p.note.textContent="Funded. Go spend it.";
+        if(remaining<=0) p.note.textContent=money0(saved)+" in the pot \u2014 funded. Go spend it.";
         else if(perCheck>0){ var c=Math.ceil(remaining/perCheck);
-          p.note.textContent=money0(remaining)+" to go — about "+c+" paycheck"+(c===1?"":"s")+"."; }
+          p.note.textContent=money0(saved)+" in the pot \u00b7 "+money0(remaining)+" to go, about "+c+" paycheck"+(c===1?"":"s")+"."; }
         else p.note.textContent=money0(remaining)+" to go. Set a monthly amount to see how long.";
       } else { p.prog.style.display="none"; p.note.style.display="none"; }
     });
@@ -2406,6 +2761,13 @@ function renderData(m){
     var acc=el("section","card");
     acc.appendChild(el("h2",null,"Account"));
     acc.appendChild(el("p","muted","Signed in as "+cloud.email+". You both write to the same budget, and a change on one phone shows up on the other within a second or two. If you're both typing in the same field at once, the last save wins."));
+    if(state.meta && state.meta.at){
+      var when=new Date(state.meta.at), mins=Math.round((Date.now()-when)/60000);
+      var ago = mins<1?"just now" : mins<60?mins+" minutes ago"
+              : mins<1440?Math.round(mins/60)+" hours ago"
+              : Math.round(mins/1440)+" days ago";
+      acc.appendChild(lineRow("Last change",ago,state.meta.by||"unknown"));
+    }
     acc.appendChild(btn("action","Sign out",function(){ cloud.signOut(); }));
     m.appendChild(acc);
   }
@@ -2414,13 +2776,14 @@ function renderData(m){
   f.appendChild(el("h2",null,"Files"));
   f.appendChild(el("p","muted","Back up every few paychecks. It's a small text file and it's the only copy that can't be wiped by a browser."));
   f.appendChild(btn("action","Export to Excel",doExport));
+  f.appendChild(btn("action","Add pay dates and bills to your calendar",doCalendar));
   f.appendChild(btn("action","Back up to a file",doBackup));
   var pick=document.createElement("input");
   pick.type="file"; pick.accept=".json,application/json"; pick.style.display="none";
   pick.addEventListener("change",function(){ if(pick.files&&pick.files[0]) doRestore(pick.files[0]); pick.value=""; });
   f.appendChild(btn("action","Restore from a backup",function(){ pick.click(); }));
   f.appendChild(pick);
-  f.appendChild(el("p","muted foot","Excel export needs a connection the first time; everything else works offline."));
+  f.appendChild(el("p","muted foot","The calendar file holds every payday and bill due date for the next few months, each with an alert the morning before, plus a two-week warning on the big ones. Open it and Calendar will offer to add them. Re-export whenever your dates change. Excel export needs a connection the first time; everything else works offline."));
   m.appendChild(f);
 
   if(errors.length){
